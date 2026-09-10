@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="kaspa_primary">#70C7BA</color>
+    <color name="kaspa_dark">#0E1418</color>
+    <color name="kaspa_surface">#18222A</color>
+    <color name="kaspa_accent">#3ADDBF</color>
+</resources>

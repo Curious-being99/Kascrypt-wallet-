@@ -1,0 +1,119 @@
+name: Build and Release KasCrypt APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper
+
+      - name: Build Unsigned Release APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Prepare Unsigned APK
+        run: |
+          mkdir -p build-artifacts
+          # Locate the generated release APK (unsigned) and copy it
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: Release APK not found!"
+            exit 1
+          fi
+          echo "Found APK at $APK_PATH"
+          cp "$APK_PATH" "kascrypt unsigned.apk"
+
+      - name: Check Keystore Secrets Availability
+        id: check_secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_ALIAS" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+            echo "Keystore secrets are fully available."
+          else
+            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+            echo "Keystore secrets are NOT available."
+            echo "Debug Info (Lengths): BASE64=${#KEYSTORE_BASE64}, ALIAS=${#KEYSTORE_ALIAS}, KSTORE_PASS=${#KEYSTORE_PASSWORD}, KEY_PASS=${#KEY_PASSWORD}"
+          fi
+
+      - name: Create Artifacts Directory
+        run: mkdir -p release-artifacts
+
+      - name: Sign APK (if keystore available)
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "Decoding Keystore..."
+          echo -n "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          
+          # Find zipalign and apksigner inside the Android SDK build-tools
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -r | head -1)
+          ZIPALIGN_PATH="$BUILD_TOOLS_DIR/zipalign"
+          APKSIGNER_PATH="$BUILD_TOOLS_DIR/apksigner"
+          
+          echo "Zipaligning APK..."
+          $ZIPALIGN_PATH -v -p 4 "kascrypt unsigned.apk" "kascrypt-aligned.apk"
+          
+          echo "Signing APK..."
+          $APKSIGNER_PATH sign --ks release.keystore \
+            --v4-signing-enabled false \
+            --ks-key-alias "$KEYSTORE_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out "release-artifacts/KasCrypt-Signed-Release.apk" \
+            "kascrypt-aligned.apk"
+          
+          echo "Successfully signed and generated release-artifacts/KasCrypt-Signed-Release.apk"
+
+      - name: Prepare Unsigned Release Name (if keystore NOT available)
+        if: env.HAS_KEYSTORE != 'true'
+        run: |
+          cp "kascrypt unsigned.apk" "release-artifacts/KasCrypt-Unsigned-Release.apk"
+          echo "Keystore not available, outputting KasCrypt-Unsigned-Release.apk"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KasCrypt-APK
+          path: release-artifacts/*.apk
+
+      - name: Publish Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: KasCrypt Build ${{ github.run_number }}
+          files: release-artifacts/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

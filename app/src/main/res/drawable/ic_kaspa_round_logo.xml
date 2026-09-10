@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <!-- Kaspa Teal Organic Circle Background -->
+    <path
+        android:fillColor="#70C7BA"
+        android:pathData="M50,6 C75,6 94,25 94,50 C94,75 75,94 50,94 C25,94 6,75 6,50 C6,25 25,6 50,6 Z" />
+
+    <!-- Official Kaspa White Emblem -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 54.5,31.2 L 64.2,31.2 L 67.5,51.8 L 60.5,71.5 L 54.5,71.5 L 59.2,56.8 L 36.8,70.5 L 32.5,63.5 L 49.2,51.8 L 32.5,40.2 L 36.8,33.2 L 57.8,47.2 Z" />
+</vector>

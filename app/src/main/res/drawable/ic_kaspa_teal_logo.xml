@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Left Kaspa Chevron '>' in Turquoise / Teal (#70C7BA) -->
+    <path
+        android:fillColor="#70C7BA"
+        android:pathData="M24,20 L38,20 L58,48 L38,76 L24,76 L44,48 Z" />
+
+    <!-- Right Kaspa Chevron '>' in Bright Turquoise / Teal (#49EACB) -->
+    <path
+        android:fillColor="#49EACB"
+        android:pathData="M48,20 L62,20 L82,48 L62,76 L48,76 L68,48 Z" />
+</vector>

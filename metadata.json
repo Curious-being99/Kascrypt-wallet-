@@ -1,0 +1,6 @@
+{
+  "name": "KASCRYPT",
+  "description": "Next-generation Kaspa BlockDAG non-custodial cryptocurrency wallet for Android with multi-account management, real-time node metrics, transaction explorer, and UTXO compound tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

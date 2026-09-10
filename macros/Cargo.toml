@@ -1,0 +1,27 @@
+[package]
+name = "kaspa-ng-macros"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+keywords = ["kaspa-ng"]
+categories = []
+exclude = ["/.*", "/test"]
+description = """
+Macros for the Kaspa NG project
+"""
+
+[lib]
+proc-macro = true
+
+[dependencies]
+convert_case = "0.11.0"
+parse-variants = "1.0.8"
+proc-macro-error = { version = "1.0.4", default-features = false }
+proc-macro2 = { version = "1.0.106" }
+quote = "1.0.46"
+sha2 = "0.11.0"
+syn = {version="2.0.118",features=["full","fold","extra-traits","parsing","proc-macro"]}
+rand = "0.10"
+
+# workflow-macro-tools.workspace = true
