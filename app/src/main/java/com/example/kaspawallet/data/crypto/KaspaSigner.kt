@@ -370,8 +370,13 @@ object KaspaSigner {
         writeU32(finalHasher, targetInput.outpointIndex)
 
         // Target scriptPublicKey
+        val targetScriptHex = if (targetInput.scriptPublicKey.isNotBlank()) {
+            targetInput.scriptPublicKey
+        } else {
+            outputs.firstOrNull()?.second ?: ""
+        }
         writeU16(finalHasher, 0) // version 0
-        writeVarBytes(finalHasher, hexStringToByteArray(targetInput.scriptPublicKey))
+        writeVarBytes(finalHasher, hexStringToByteArray(targetScriptHex))
 
         // Target amount & sequence
         writeU64(finalHasher, targetInput.amountSompi)
@@ -509,7 +514,8 @@ object KaspaSigner {
         val jsonInputs = JSONArray()
         for (i in inputs.indices) {
             val utxo = inputs[i]
-            val cleanScript = utxo.scriptPublicKey.lowercase().trim()
+            val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
+            val cleanScript = effectiveScript.lowercase().trim()
             // Find the exact private key for this UTXO from receive (0/0..29) or change (1/0..29)
             val privKey = accountKeyMap[cleanScript]
                 ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
@@ -567,7 +573,7 @@ object KaspaSigner {
         txInner.put("mass", consensusMass)
 
         jsonTx.put("transaction", txInner)
-        jsonTx.put("allowOrphan", true)
+        jsonTx.put("allowOrphan", false)
 
         // Calculate authentic Kaspa Transaction ID
         val txId = computeTransactionId(
@@ -615,7 +621,8 @@ object KaspaSigner {
         val jsonInputs = JSONArray()
         for (i in inputs.indices) {
             val utxo = inputs[i]
-            val cleanScript = utxo.scriptPublicKey.lowercase().trim()
+            val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
+            val cleanScript = effectiveScript.lowercase().trim()
             val privKey = accountKeyMap[cleanScript]
                 ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
                 ?: defaultPrivKey
@@ -669,7 +676,7 @@ object KaspaSigner {
         txInner.put("mass", consensusMass)
 
         jsonTx.put("transaction", txInner)
-        jsonTx.put("allowOrphan", true)
+        jsonTx.put("allowOrphan", false)
 
         val txId = computeTransactionId(
             txVersion = 0,

@@ -151,37 +151,56 @@ object KaspaCrypto {
     }
 
     /**
-     * Decodes a Kaspa Bech32 address into its consensus scriptPublicKey (P2PK 0x20 <pubKey> 0xac)
+     * Decodes a Kaspa Bech32 address into its consensus scriptPublicKey (P2PK 0x20 <pubKey> 0xac, ECDSA 0x21 <pubKey> 0xac, P2SH 0xaa 0x20 <hash> 0x87)
      * Matching Rusty Kaspa / kaspad Address::to_script_pub_key
      */
     fun decodeAddressToScriptPublicKey(address: String): String {
-        val parts = address.split(":")
-        val payloadStr = if (parts.size == 2) parts[1] else address
-        if (payloadStr.length < 16) {
-            return "20" + address.takeLast(64).padEnd(64, '0') + "ac"
-        }
-
-        // Drop 8-char checksum
-        val dataChars = if (payloadStr.length > 8) payloadStr.dropLast(8) else payloadStr
-        val data5Bit = ByteArray(dataChars.length)
-        for (i in dataChars.indices) {
-            val idx = CHARSET.indexOf(dataChars[i])
-            if (idx == -1) {
-                return "20" + address.takeLast(64).padEnd(64, '0') + "ac"
+        val clean = address.trim().lowercase()
+        val parts = clean.split(":")
+        val payloadStr = if (parts.size == 2) parts[1] else clean
+        if (payloadStr.length >= 16) {
+            // Drop 8-char checksum
+            val dataChars = if (payloadStr.length > 8) payloadStr.dropLast(8) else payloadStr
+            val data5Bit = ByteArray(dataChars.length)
+            var valid = true
+            for (i in dataChars.indices) {
+                val idx = CHARSET.indexOf(dataChars[i])
+                if (idx == -1) {
+                    valid = false
+                    break
+                }
+                data5Bit[i] = idx.toByte()
             }
-            data5Bit[i] = idx.toByte()
+            if (valid) {
+                val decoded8Bit = convertBits(data5Bit, 5, 8, false)
+                if (decoded8Bit != null && decoded8Bit.isNotEmpty()) {
+                    val version = decoded8Bit[0].toInt() and 0xFF
+                    when (version) {
+                        0 -> { // Schnorr P2PK (32 bytes)
+                            if (decoded8Bit.size >= 33) {
+                                val pubKeyBytes = decoded8Bit.copyOfRange(1, 33)
+                                return "20${KaspaSigner.byteArrayToHexString(pubKeyBytes)}ac"
+                            }
+                        }
+                        8 -> { // ECDSA P2PK (33 bytes)
+                            if (decoded8Bit.size >= 34) {
+                                val pubKeyBytes = decoded8Bit.copyOfRange(1, 34)
+                                return "21${KaspaSigner.byteArrayToHexString(pubKeyBytes)}ac"
+                            }
+                        }
+                        1 -> { // P2SH (32 bytes)
+                            if (decoded8Bit.size >= 33) {
+                                val scriptHashBytes = decoded8Bit.copyOfRange(1, 33)
+                                return "aa20${KaspaSigner.byteArrayToHexString(scriptHashBytes)}87"
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        val decoded8Bit = convertBits(data5Bit, 5, 8, false)
-        if (decoded8Bit != null && decoded8Bit.size >= 33) {
-            // decoded8Bit[0] is version, decoded8Bit[1..32] is 32-byte Schnorr X-only public key
-            val pubKeyBytes = ByteArray(32)
-            System.arraycopy(decoded8Bit, 1, pubKeyBytes, 0, 32)
-            val pubKeyHex = KaspaSigner.byteArrayToHexString(pubKeyBytes)
-            return "20${pubKeyHex}ac"
-        }
-
-        return "20" + address.takeLast(64).padEnd(64, '0') + "ac"
+        val rawHex = clean.removePrefix("kaspa:").removePrefix("kaspatest:").removePrefix("kaspadev:").removePrefix("kaspasim:")
+        return if (rawHex.length == 64) "20${rawHex}ac" else "20" + clean.takeLast(64).padEnd(64, '0') + "ac"
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.example.kaspawallet.data.api
 
 import android.util.Log
+import com.example.kaspawallet.data.crypto.KaspaCrypto
 import com.example.kaspawallet.data.crypto.KaspaUtils
 import com.example.kaspawallet.data.model.*
 import kotlinx.coroutines.Dispatchers
@@ -494,7 +495,10 @@ class KaspaApiClient {
 
                             val entry = item.getJSONObject("utxoEntry")
                             val amount = entry.optLong("amount", entry.optString("amount", "0").toLongOrNull() ?: 0L)
-                            val scriptPubKey = entry.optJSONObject("scriptPublicKey")?.optString("scriptPublicKey", "") ?: ""
+                            val scriptPubKeyObj = entry.optJSONObject("scriptPublicKey")
+                            val scriptPubKeyFromObj = scriptPubKeyObj?.optString("scriptPublicKey", scriptPubKeyObj.optString("script_public_key", "")) ?: ""
+                            val rawScriptPubKey = if (scriptPubKeyFromObj.isNotBlank()) scriptPubKeyFromObj else entry.optString("scriptPublicKey", entry.optString("script_public_key", ""))
+                            val scriptPubKey = if (rawScriptPubKey.isNotBlank()) rawScriptPubKey else KaspaCrypto.decodeAddressToScriptPublicKey(address)
                             val blockDaaScore = entry.optLong("blockDaaScore", entry.optString("blockDaaScore", "0").toLongOrNull() ?: 0L)
                             val isCoinbase = entry.optBoolean("isCoinbase", false)
 
@@ -646,30 +650,39 @@ class KaspaApiClient {
     }
 
     suspend fun broadcastTransaction(rawTxJson: String, network: KaspaNetwork): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val baseUrl = getBaseUrl(network)
-        try {
-            val mediaType = "application/json; charset=utf-8".toMediaType()
-            val body = rawTxJson.toRequestBody(mediaType)
-            val request = Request.Builder()
-                .url("$baseUrl/transactions")
-                .post(body)
-                .build()
+        val candidateUrls = getCandidateBaseUrls(network)
+        var lastErr = "Transaction broadcast failed"
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val body = rawTxJson.toRequestBody(mediaType)
 
-            client.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: ""
-                if (response.isSuccessful) {
-                    val json = JSONObject(bodyStr)
-                    val txId = json.optString("transactionId", json.optString("transaction_id", json.optString("txId", "success")))
-                    Pair(true, txId)
-                } else {
-                    val errorMsg = parseBroadcastError(response.code, bodyStr)
-                    Pair(false, errorMsg)
+        for (baseUrl in candidateUrls) {
+            try {
+                val request = Request.Builder()
+                    .url("$baseUrl/transactions")
+                    .post(body)
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    val bodyStr = response.body?.string() ?: ""
+                    if (response.isSuccessful) {
+                        val json = JSONObject(bodyStr)
+                        val txId = json.optString("transactionId", json.optString("transaction_id", json.optString("txId", "success")))
+                        return@withContext Pair(true, txId)
+                    } else {
+                        lastErr = parseBroadcastError(response.code, bodyStr)
+                        Log.w("KaspaApiClient", "Node $baseUrl rejected tx ($response.code): $bodyStr")
+                        // If rejected due to missing parent/orphan in mempool race, backoff briefly before trying next node
+                        if (bodyStr.lowercase().contains("orphan") || bodyStr.lowercase().contains("missing")) {
+                            kotlinx.coroutines.delay(120)
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                lastErr = e.localizedMessage ?: "Network connection error to $baseUrl"
+                Log.e("KaspaApiClient", "Broadcast transaction error on $baseUrl", e)
             }
-        } catch (e: Exception) {
-            Log.e("KaspaApiClient", "Broadcast transaction error", e)
-            Pair(false, e.localizedMessage ?: "Network connection error")
         }
+        Pair(false, lastErr)
     }
 
     private fun parseBroadcastError(code: Int, bodyStr: String): String {
