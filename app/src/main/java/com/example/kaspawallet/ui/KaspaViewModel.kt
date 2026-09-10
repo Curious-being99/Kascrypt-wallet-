@@ -445,7 +445,8 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                         name = name,
                         mnemonicWords = words,
                         hasPassphrase = hasPassphrase,
-                        passphrase = passphrase
+                        passphrase = passphrase,
+                        password = password
                     )
                 }
                 saveWalletPassword(context, wallet.id, password)
@@ -505,11 +506,11 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 val addressesToScan = mutableListOf<String>()
                 for (idx in 0 until gapLimit) {
                     try {
-                        val recAddr = KaspaCrypto.deriveKaspaAddress(words, accountIndex = 0, addressIndex = idx, network = network)
+                        val recAddr = KaspaCrypto.deriveKaspaAddress(words, accountIndex = 0, addressIndex = idx, network = network, passphrase = passphrase)
                         if (recAddr.isNotBlank()) addressesToScan.add(recAddr)
                     } catch (_: Exception) {}
                     try {
-                        val chgAddr = KaspaCrypto.deriveKaspaChangeAddress(words, accountIndex = 0, addressIndex = idx, network = network)
+                        val chgAddr = KaspaCrypto.deriveKaspaChangeAddress(words, accountIndex = 0, addressIndex = idx, network = network, passphrase = passphrase)
                         if (chgAddr.isNotBlank()) addressesToScan.add(chgAddr)
                     } catch (_: Exception) {}
                 }
@@ -679,19 +680,20 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
     }
 
     fun finishScanAndNavigateToWallet() {
+        val allWallets = repository.database.walletDao().getAllWalletsSync()
         val activeWallet = _uiState.value.activeWallet
-            ?: repository.database.walletDao().getAllWalletsSync().firstOrNull()
+            ?: allWallets.firstOrNull()
 
         if (activeWallet != null) {
             val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
             val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
-            val allWallets = repository.database.walletDao().getAllWalletsSync()
             _uiState.update { current ->
                 val walletList = if (allWallets.isNotEmpty()) allWallets else (if (current.wallets.any { it.id == activeWallet.id }) current.wallets else current.wallets + activeWallet)
                 current.copy(
                     wallets = walletList,
                     activeWallet = activeWallet,
                     activeAccount = activeAcc,
+                    selectedTab = MainTab.OVERVIEW,
                     isWalletLocked = false,
                     showCreateWalletDialog = false,
                     showImportWalletDialog = false,
@@ -704,9 +706,11 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 repository.setActiveAccount(activeAcc.id)
             }
             observeAccountsAndTransactions(activeWallet.id)
+            refreshAll()
         } else {
             _uiState.update { current ->
                 current.copy(
+                    selectedTab = MainTab.OVERVIEW,
                     showCreateWalletDialog = false,
                     showImportWalletDialog = false,
                     showSetupWizard = false

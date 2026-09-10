@@ -337,7 +337,7 @@ fun MainScreen(
     if (state.showSetupWizard || state.showCreateWalletDialog || state.showImportWalletDialog) {
         WalletSetupWizard(
             viewModel = viewModel,
-            initialMode = if (state.showImportWalletDialog || state.setupWizardMode == "IMPORT") "IMPORT" else "CREATE",
+            initialMode = if (state.setupWizardMode == "RESCAN") "RESCAN" else if (state.showImportWalletDialog || state.setupWizardMode == "IMPORT") "IMPORT" else "CREATE",
             onDismiss = {
                 viewModel.closeSetupWizard()
                 viewModel.setShowCreateWalletDialog(false)
