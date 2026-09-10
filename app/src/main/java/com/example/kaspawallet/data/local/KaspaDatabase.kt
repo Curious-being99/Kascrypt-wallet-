@@ -33,6 +33,7 @@ abstract class KaspaDatabase : RoomDatabase() {
                     KaspaDatabase::class.java,
                     "kaspa_wallet.db"
                 ).fallbackToDestructiveMigration()
+                .allowMainThreadQueries()
                 .build()
                 INSTANCE = instance
                 instance

@@ -72,6 +72,9 @@ data class ScanIndexingUiState(
     val derivationPath: String = "m/44'/111111'/0'/0/0",
     val network: KaspaNetwork = KaspaNetwork.MAINNET,
     val daaScore: Long = 0L,
+    val connectedPeers: Int = 0,
+    val nodeLatencyMs: Long = 0L,
+    val nodeVersion: String = "",
     val balanceSompi: Long = 0L,
     val utxoCount: Int = 0,
     val txCount: Int = 0,
@@ -259,31 +262,43 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
     }
 
     fun closeSetupWizard() {
-        val activeWallet = _uiState.value.activeWallet
-            ?: repository.database.walletDao().getAllWalletsSync().firstOrNull()
-        if (activeWallet != null) {
-            val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
-            val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
-            val allWallets = repository.database.walletDao().getAllWalletsSync()
-            _uiState.update { current ->
-                val walletList = if (allWallets.isNotEmpty()) allWallets else (if (current.wallets.any { it.id == activeWallet.id }) current.wallets else current.wallets + activeWallet)
-                current.copy(
-                    wallets = walletList,
-                    activeWallet = activeWallet,
-                    activeAccount = activeAcc,
-                    isWalletLocked = false,
-                    showCreateWalletDialog = false,
-                    showImportWalletDialog = false,
-                    showSetupWizard = false
-                )
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val allWallets = repository.database.walletDao().getAllWalletsSync()
+                val activeWallet = _uiState.value.activeWallet
+                    ?: allWallets.firstOrNull()
+                if (activeWallet != null) {
+                    val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
+                    val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _uiState.update { current ->
+                            val walletList = if (allWallets.isNotEmpty()) allWallets else current.wallets
+                            current.copy(
+                                wallets = walletList,
+                                activeWallet = activeWallet,
+                                activeAccount = activeAcc,
+                                isWalletLocked = false,
+                                showCreateWalletDialog = false,
+                                showImportWalletDialog = false,
+                                showSetupWizard = false
+                            )
+                        }
+                        observeAccountsAndTransactions(activeWallet.id)
+                    }
+                    repository.setActiveWallet(activeWallet.id)
+                    if (activeAcc != null) {
+                        repository.setActiveAccount(activeAcc.id)
+                    }
+                } else {
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _uiState.update { it.copy(showSetupWizard = false) }
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.update { it.copy(showSetupWizard = false) }
+                }
             }
-            repository.setActiveWallet(activeWallet.id)
-            if (activeAcc != null) {
-                repository.setActiveAccount(activeAcc.id)
-            }
-            observeAccountsAndTransactions(activeWallet.id)
-        } else {
-            _uiState.update { it.copy(showSetupWizard = false) }
         }
     }
 
@@ -388,7 +403,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         password: String = "",
         isImport: Boolean = false
     ) {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val initialAddress = try {
                 KaspaUtils.generateDeterministicAddress(
                     mnemonicWords = words,
@@ -400,31 +415,35 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 ""
             }
 
-            _scanIndexingState.value = ScanIndexingUiState(
-                isScanning = true,
-                stage = ScanIndexingStage.DERIVING_KEYS,
-                progress = 0.0f,
-                statusMessage = "Initializing on-chain BlockDAG indexer...",
-                derivedAddress = initialAddress,
-                network = network,
-                walletName = name,
-                isImportMode = isImport
-            )
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                _scanIndexingState.value = ScanIndexingUiState(
+                    isScanning = true,
+                    stage = ScanIndexingStage.DERIVING_KEYS,
+                    progress = 0.0f,
+                    statusMessage = "Initializing on-chain BlockDAG indexer...",
+                    derivedAddress = initialAddress,
+                    network = network,
+                    walletName = name,
+                    isImportMode = isImport
+                )
+            }
 
             try {
                 if (network != _uiState.value.network) {
                     repository.setNetwork(network)
                 }
 
-                // Stage 1: Key Derivation & Instant DB Persistence
-                kotlinx.coroutines.delay(250)
-                _scanIndexingState.update {
-                    it.copy(
-                        progress = 0.08f,
-                        statusMessage = "Deriving cryptographic BIP-44 keypair & address..."
-                    )
+                // Stage 1: Key Derivation & Local DB Registration
+                kotlinx.coroutines.delay(200)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            progress = 0.12f,
+                            statusMessage = "Deriving cryptographic BIP-44 keypair & address..."
+                        )
+                    }
                 }
-                kotlinx.coroutines.delay(250)
+                kotlinx.coroutines.delay(200)
                 val targetAddress = if (initialAddress.isNotBlank()) initialAddress else {
                     KaspaUtils.generateDeterministicAddress(
                         mnemonicWords = words,
@@ -453,110 +472,120 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 repository.setActiveWallet(wallet.id)
                 repository.setActiveAccount(initialAccount.id)
 
-                _uiState.update { current ->
-                    val updatedWallets = if (current.wallets.any { w -> w.id == wallet.id }) current.wallets else current.wallets + wallet
-                    current.copy(
-                        wallets = updatedWallets,
-                        activeWallet = wallet,
-                        activeAccount = initialAccount,
-                        isWalletLocked = false
-                    )
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.update { current ->
+                        val updatedWallets = if (current.wallets.any { w -> w.id == wallet.id }) current.wallets else current.wallets + wallet
+                        current.copy(
+                            wallets = updatedWallets,
+                            activeWallet = wallet,
+                            activeAccount = initialAccount,
+                            isWalletLocked = false
+                        )
+                    }
+
+                    _scanIndexingState.update {
+                        it.copy(
+                            derivedAddress = targetAddress,
+                            progress = 0.20f,
+                            statusMessage = "Target address derived: ${targetAddress.take(18)}..."
+                        )
+                    }
                 }
 
-                _scanIndexingState.update {
-                    it.copy(
-                        derivedAddress = targetAddress,
-                        progress = 0.18f,
-                        statusMessage = "Target address derived: ${targetAddress.take(18)}..."
-                    )
+                // Stage 2: P2P Node Handshake & BlockDAG Sync
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.CONNECTING_NODE,
+                            progress = 0.26f,
+                            statusMessage = "Connecting to Kaspa P2P node network (${network.displayName})..."
+                        )
+                    }
                 }
-
-                // Stage 2: Node Handshake & DAA Score
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.CONNECTING_NODE,
-                        progress = 0.24f,
-                        statusMessage = "Connecting to Kaspa node (${network.displayName})..."
-                    )
-                }
+                kotlinx.coroutines.delay(350)
                 val dagInfo = try {
                     repository.apiClient.fetchBlockDagInfo(network)
                 } catch (e: Exception) {
                     BlockDagInfo()
                 }
-                val liveDaaScore = if (dagInfo.virtualDaaScore > 0) dagInfo.virtualDaaScore else 53_580_000L
-                kotlinx.coroutines.delay(250)
-                _scanIndexingState.update {
-                    it.copy(
-                        daaScore = liveDaaScore,
-                        progress = 0.32f,
-                        statusMessage = "Connected to BlockDAG. Current DAA: #$liveDaaScore"
-                    )
+                val liveDaaScore = dagInfo.virtualDaaScore
+                val livePeers = dagInfo.connectedPeers
+                val liveLatency = dagInfo.nodeLatencyMs
+                val nodeVer = dagInfo.nodeVersion
+
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            daaScore = liveDaaScore,
+                            connectedPeers = livePeers,
+                            nodeLatencyMs = liveLatency,
+                            nodeVersion = nodeVer,
+                            progress = 0.38f,
+                            statusMessage = if (liveDaaScore > 0) "Connected to Kaspa Node • Virtual DAA #$liveDaaScore" else "Connected to ${network.displayName} Node"
+                        )
+                    }
+                }
+                kotlinx.coroutines.delay(400)
+
+                // Stage 3: Smooth, Non-Aggressive UTXO & Address Window Scan
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.SCANNING_UTXOS,
+                            progress = 0.42f,
+                            statusMessage = "Scanning on-chain UTXO state for primary & change paths..."
+                        )
+                    }
                 }
 
-                // Stage 3: Scanning UTXOs & Balances across receive and change derivation paths (Gap Limit: 30)
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.SCANNING_UTXOS,
-                        progress = 0.36f,
-                        statusMessage = "Scanning UTXOs across 30 receive & 30 change addresses..."
-                    )
-                }
-                val gapLimit = 30
-                val addressesToScan = mutableListOf<String>()
-                for (idx in 0 until gapLimit) {
+                // Build scan list (Priority: index 0 receive & change, then window 1..15)
+                val scanAddresses = mutableListOf<String>()
+                scanAddresses.add(initialAccount.address)
+                val scanLimit = if (isImport) 15 else 5
+                for (idx in 0 until scanLimit) {
                     try {
                         val recAddr = KaspaCrypto.deriveKaspaAddress(words, accountIndex = 0, addressIndex = idx, network = network, passphrase = passphrase)
-                        if (recAddr.isNotBlank()) addressesToScan.add(recAddr)
+                        if (recAddr.isNotBlank()) scanAddresses.add(recAddr)
                     } catch (_: Exception) {}
                     try {
                         val chgAddr = KaspaCrypto.deriveKaspaChangeAddress(words, accountIndex = 0, addressIndex = idx, network = network, passphrase = passphrase)
-                        if (chgAddr.isNotBlank()) addressesToScan.add(chgAddr)
+                        if (chgAddr.isNotBlank()) scanAddresses.add(chgAddr)
                     } catch (_: Exception) {}
                 }
-                val uniqueAddresses = addressesToScan.distinct()
+                val uniqueAddresses = scanAddresses.distinct()
 
                 val discoveredUtxos = mutableListOf<UtxoEntry>()
                 val activeAddressesWithActivity = mutableSetOf<String>()
                 var aggregatedBalanceFromCalls = 0L
 
-                // Scan concurrently in batches of 5 to avoid REST rate limits and update progress smoothly
-                val chunks = uniqueAddresses.chunked(5)
-                val totalChunks = chunks.size.coerceAtLeast(1)
-                for ((chunkIndex, chunk) in chunks.withIndex()) {
-                    val chunkResults = try {
-                        kotlinx.coroutines.coroutineScope {
-                            val deferreds = chunk.map { addr ->
-                                async(kotlinx.coroutines.Dispatchers.IO) {
-                                    val utxos = repository.apiClient.fetchAddressUtxos(addr, network)
-                                    val bal = repository.apiClient.fetchAddressBalance(addr, network)
-                                    Triple(addr, utxos, bal)
-                                }
+                // Scan smoothly in small pairs with pacing to prevent 429 rate limits & heavy load
+                val batches = uniqueAddresses.chunked(2)
+                val totalBatches = batches.size.coerceAtLeast(1)
+                for ((batchIdx, batch) in batches.withIndex()) {
+                    for (addr in batch) {
+                        try {
+                            val utxos = repository.apiClient.fetchAddressUtxos(addr, network)
+                            val bal = repository.apiClient.fetchAddressBalance(addr, network)
+                            if (utxos.isNotEmpty()) {
+                                discoveredUtxos.addAll(utxos)
+                                activeAddressesWithActivity.add(addr)
                             }
-                            deferreds.awaitAll()
-                        }
-                    } catch (e: Exception) {
-                        emptyList()
+                            if (bal > 0) {
+                                aggregatedBalanceFromCalls += bal
+                                activeAddressesWithActivity.add(addr)
+                            }
+                        } catch (_: Exception) {}
                     }
 
-                    for ((addr, utxos, bal) in chunkResults) {
-                        if (utxos.isNotEmpty()) {
-                            discoveredUtxos.addAll(utxos)
-                            activeAddressesWithActivity.add(addr)
+                    val stepProgress = 0.42f + (0.36f * (batchIdx + 1) / totalBatches)
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _scanIndexingState.update {
+                            it.copy(
+                                utxoCount = discoveredUtxos.size,
+                                progress = stepProgress,
+                                statusMessage = "Checking address batch ${batchIdx + 1}/$totalBatches on BlockDAG..."
+                            )
                         }
-                        if (bal > 0) {
-                            aggregatedBalanceFromCalls += bal
-                            activeAddressesWithActivity.add(addr)
-                        }
-                    }
-
-                    val stepProgress = 0.36f + (0.38f * (chunkIndex + 1) / totalChunks)
-                    _scanIndexingState.update {
-                        it.copy(
-                            utxoCount = discoveredUtxos.size,
-                            progress = stepProgress,
-                            statusMessage = "Scanning address batch ${chunkIndex + 1}/$totalChunks on-chain..."
-                        )
                     }
                     kotlinx.coroutines.delay(120)
                 }
@@ -564,65 +593,66 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 val utxoSumSompi = discoveredUtxos.sumOf { it.amountSompi }
                 val totalDiscoveredBalanceSompi = maxOf(utxoSumSompi, aggregatedBalanceFromCalls)
 
-                _scanIndexingState.update {
-                    it.copy(
-                        utxoCount = discoveredUtxos.size,
-                        progress = 0.78f,
-                        statusMessage = if (discoveredUtxos.isNotEmpty()) "${discoveredUtxos.size} UTXOs discovered on-chain (30 address limit)" else "Zero unspent UTXOs (Clean graph)"
-                    )
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            utxoCount = discoveredUtxos.size,
+                            progress = 0.78f,
+                            statusMessage = if (discoveredUtxos.isNotEmpty()) "${discoveredUtxos.size} UTXOs discovered on-chain" else "Zero unspent UTXOs (Clean state)"
+                        )
+                    }
                 }
 
                 // Stage 4: Calculating On-Chain Consensus Balance
                 kotlinx.coroutines.delay(200)
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.CALCULATING_BALANCE,
-                        progress = 0.84f,
-                        balanceSompi = totalDiscoveredBalanceSompi,
-                        statusMessage = "Confirmed balance: ${KaspaUtils.formatKas(KaspaUtils.sompiToKas(totalDiscoveredBalanceSompi))} KAS"
-                    )
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.CALCULATING_BALANCE,
+                            progress = 0.84f,
+                            balanceSompi = totalDiscoveredBalanceSompi,
+                            statusMessage = "Verified balance: ${KaspaUtils.formatKas(KaspaUtils.sompiToKas(totalDiscoveredBalanceSompi))} KAS"
+                        )
+                    }
                 }
 
                 // Stage 5: Indexing Historical Transactions & Persisting to Room
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.INDEXING_HISTORY,
-                        progress = 0.88f,
-                        statusMessage = "Indexing BlockDAG transaction history..."
-                    )
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.INDEXING_HISTORY,
+                            progress = 0.88f,
+                            statusMessage = "Indexing BlockDAG transaction history..."
+                        )
+                    }
                 }
 
-                // Update confirmed balance in Room DB immediately
+                // Update confirmed balance in Room DB
                 if (totalDiscoveredBalanceSompi > 0 || initialAccount.balanceSompi == 0L) {
                     repository.database.accountDao().updateBalance(initialAccount.id, totalDiscoveredBalanceSompi)
                 }
                 repository.setAccountUtxos(initialAccount.id, discoveredUtxos)
 
-                // Fetch transactions for primary address & any addresses with activity
+                // Fetch transactions for primary address & active addresses
                 val targetAddressesForTxs = (setOf(initialAccount.address) + activeAddressesWithActivity).toList()
                 val allTxsList = mutableListOf<TransactionEntity>()
-                val txChunks = targetAddressesForTxs.chunked(4)
-                val totalTxChunks = txChunks.size.coerceAtLeast(1)
-                for ((tIdx, chunk) in txChunks.withIndex()) {
-                    val txChunk = try {
-                        kotlinx.coroutines.coroutineScope {
-                            val deferreds = chunk.map { addr ->
-                                async(kotlinx.coroutines.Dispatchers.IO) {
-                                    repository.apiClient.fetchAddressTransactions(addr, wallet.id, initialAccount.id, network)
-                                }
-                            }
-                            deferreds.awaitAll().flatten()
-                        }
-                    } catch (e: Exception) {
-                        emptyList()
+                val txBatches = targetAddressesForTxs.chunked(2)
+                val totalTxBatches = txBatches.size.coerceAtLeast(1)
+                for ((tIdx, batch) in txBatches.withIndex()) {
+                    for (addr in batch) {
+                        try {
+                            val txs = repository.apiClient.fetchAddressTransactions(addr, wallet.id, initialAccount.id, network)
+                            allTxsList.addAll(txs)
+                        } catch (_: Exception) {}
                     }
-                    allTxsList.addAll(txChunk)
-                    val txStepProgress = 0.88f + (0.08f * (tIdx + 1) / totalTxChunks)
-                    _scanIndexingState.update {
-                        it.copy(
-                            progress = txStepProgress,
-                            txCount = allTxsList.size
-                        )
+                    val txStepProgress = 0.88f + (0.08f * (tIdx + 1) / totalTxBatches)
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _scanIndexingState.update {
+                            it.copy(
+                                progress = txStepProgress,
+                                txCount = allTxsList.size
+                            )
+                        }
                     }
                     kotlinx.coroutines.delay(100)
                 }
@@ -631,93 +661,120 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                     repository.database.transactionDao().insertTransaction(tx)
                 }
 
-                // Sync on-chain balance & auto-sweep any secondary address funds to main account
+                // Sync on-chain balance & accounts
                 try {
                     repository.syncAccountOnChain(initialAccount.id)
                 } catch (_: Exception) {}
 
-                // Fetch final synced account for state
                 val syncedAccount = repository.database.accountDao().getAccountById(initialAccount.id) ?: initialAccount
                 val finalBalance = syncedAccount.balanceSompi.coerceAtLeast(totalDiscoveredBalanceSompi)
 
                 // Stage 6: Complete
-                kotlinx.coroutines.delay(250)
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.COMPLETE,
-                        progress = 1.0f,
-                        isComplete = true,
-                        isScanning = false,
-                        balanceSompi = finalBalance,
-                        txCount = allTxs.size,
-                        indexedTransactions = allTxs,
-                        statusMessage = "On-chain scanning & indexing complete!"
-                    )
-                }
+                kotlinx.coroutines.delay(200)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.COMPLETE,
+                            progress = 1.0f,
+                            isComplete = true,
+                            isScanning = false,
+                            balanceSompi = finalBalance,
+                            txCount = allTxs.size,
+                            indexedTransactions = allTxs,
+                            statusMessage = "On-chain scanning & indexing complete!"
+                        )
+                    }
 
-                _uiState.update { current ->
-                    val updatedWallets = if (current.wallets.any { w -> w.id == wallet.id }) current.wallets else current.wallets + wallet
-                    current.copy(
-                        wallets = updatedWallets,
-                        activeWallet = wallet,
-                        activeAccount = syncedAccount.copy(balanceSompi = finalBalance),
-                        isWalletLocked = false
-                    )
+                    _uiState.update { current ->
+                        val updatedWallets = if (current.wallets.any { w -> w.id == wallet.id }) current.wallets else current.wallets + wallet
+                        current.copy(
+                            wallets = updatedWallets,
+                            activeWallet = wallet,
+                            activeAccount = syncedAccount.copy(balanceSompi = finalBalance),
+                            isWalletLocked = false
+                        )
+                    }
+                    observeAccountsAndTransactions(wallet.id)
                 }
-                observeAccountsAndTransactions(wallet.id)
             } catch (e: Exception) {
-                _scanIndexingState.update {
-                    it.copy(
-                        stage = ScanIndexingStage.COMPLETE,
-                        progress = 1.0f,
-                        isComplete = true,
-                        isScanning = false,
-                        statusMessage = "Wallet ready"
-                    )
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.update {
+                        it.copy(
+                            stage = ScanIndexingStage.COMPLETE,
+                            progress = 1.0f,
+                            isComplete = true,
+                            isScanning = false,
+                            statusMessage = "Wallet ready"
+                        )
+                    }
                 }
             }
         }
     }
 
     fun finishScanAndNavigateToWallet() {
-        val allWallets = repository.database.walletDao().getAllWalletsSync()
-        val activeWallet = _uiState.value.activeWallet
-            ?: allWallets.firstOrNull()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val allWallets = repository.database.walletDao().getAllWalletsSync()
+                val activeWallet = _uiState.value.activeWallet
+                    ?: allWallets.firstOrNull()
 
-        if (activeWallet != null) {
-            val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
-            val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
-            _uiState.update { current ->
-                val walletList = if (allWallets.isNotEmpty()) allWallets else (if (current.wallets.any { it.id == activeWallet.id }) current.wallets else current.wallets + activeWallet)
-                current.copy(
-                    wallets = walletList,
-                    activeWallet = activeWallet,
-                    activeAccount = activeAcc,
-                    selectedTab = MainTab.OVERVIEW,
-                    isWalletLocked = false,
-                    showCreateWalletDialog = false,
-                    showImportWalletDialog = false,
-                    showSetupWizard = false,
-                    statusMessage = "Kaspa Wallet '${activeWallet.name}' ready"
-                )
-            }
-            repository.setActiveWallet(activeWallet.id)
-            if (activeAcc != null) {
-                repository.setActiveAccount(activeAcc.id)
-            }
-            observeAccountsAndTransactions(activeWallet.id)
-            refreshAll()
-        } else {
-            _uiState.update { current ->
-                current.copy(
-                    selectedTab = MainTab.OVERVIEW,
-                    showCreateWalletDialog = false,
-                    showImportWalletDialog = false,
-                    showSetupWizard = false
-                )
+                if (activeWallet != null) {
+                    val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
+                    val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
+                    
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        val walletList = if (allWallets.isNotEmpty()) allWallets else (if (_uiState.value.wallets.any { it.id == activeWallet.id }) _uiState.value.wallets else _uiState.value.wallets + activeWallet)
+                        _uiState.update { current ->
+                            current.copy(
+                                wallets = walletList,
+                                activeWallet = activeWallet,
+                                activeAccount = activeAcc,
+                                selectedTab = MainTab.OVERVIEW,
+                                isWalletLocked = false,
+                                showCreateWalletDialog = false,
+                                showImportWalletDialog = false,
+                                showSetupWizard = false,
+                                statusMessage = "Kaspa Wallet '${activeWallet.name}' ready"
+                            )
+                        }
+                        observeAccountsAndTransactions(activeWallet.id)
+                    }
+                    repository.setActiveWallet(activeWallet.id)
+                    if (activeAcc != null) {
+                        repository.setActiveAccount(activeAcc.id)
+                    }
+                    refreshAll()
+                } else {
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _uiState.update { current ->
+                            current.copy(
+                                selectedTab = MainTab.OVERVIEW,
+                                showCreateWalletDialog = false,
+                                showImportWalletDialog = false,
+                                showSetupWizard = false
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("KaspaViewModel", "Error transitioning to dashboard: ${e.message}", e)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.update { current ->
+                        current.copy(
+                            selectedTab = MainTab.OVERVIEW,
+                            showCreateWalletDialog = false,
+                            showImportWalletDialog = false,
+                            showSetupWizard = false
+                        )
+                    }
+                }
+            } finally {
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _scanIndexingState.value = ScanIndexingUiState()
+                }
             }
         }
-        _scanIndexingState.value = ScanIndexingUiState()
     }
 
     fun resetScanIndexing() {
