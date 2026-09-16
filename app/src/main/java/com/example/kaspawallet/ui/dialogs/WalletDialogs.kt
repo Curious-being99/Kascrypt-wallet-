@@ -605,7 +605,7 @@ fun SendKasDialog(
                         val trimmedInput = authInput.trim()
                         val isPasswordValid = viewModel.verifyWalletPassword(context, activeWallet.id, trimmedInput)
                         val words = KaspaCrypto.decryptMnemonic(activeWallet.encryptedMnemonic, trimmedInput)
-                        val isMnemonicValid = (words.size in listOf(12, 24) && words.joinToString(" ") == trimmedInput)
+                        val isMnemonicValid = (words.isNotEmpty() && words.joinToString(" ") == trimmedInput)
                         if (isPasswordValid || isMnemonicValid) {
                             viewModel.sendKas(
                                 recipientAddress = recipientAddress,
@@ -706,11 +706,17 @@ fun ReceiveKasDialog(
     var showAdvanced by remember { mutableStateOf(false) }
 
     val words = remember(activeWallet) {
-        activeWallet?.encryptedMnemonic?.split(" ")?.filter { it.isNotBlank() } ?: emptyList()
+        if (activeWallet != null) {
+            KaspaCrypto.decryptMnemonic(activeWallet.encryptedMnemonic, "")
+        } else {
+            emptyList()
+        }
     }
 
     val displayAddress = remember(activeAccount, words, selectedBranch, addressIndex, network) {
-        if (words.isNotEmpty() && activeAccount != null) {
+        if (selectedBranch == 0 && addressIndex == 0 && activeAccount != null) {
+            activeAccount.address
+        } else if (words.isNotEmpty() && activeAccount != null) {
             val seed = KaspaCrypto.mnemonicToSeed(words)
             KaspaSigner.deriveKaspaAddressFromSeed(
                 seed = seed,
@@ -1533,7 +1539,10 @@ fun SeedBackupDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val words = remember(mnemonicPhrase) { mnemonicPhrase.trim().split("\\s+".toRegex()).filter { it.isNotBlank() } }
+    val words = remember(mnemonicPhrase) {
+        val decrypted = KaspaCrypto.decryptMnemonic(mnemonicPhrase)
+        if (decrypted.isNotEmpty()) decrypted else mnemonicPhrase.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+    }
     var isRevealed by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 

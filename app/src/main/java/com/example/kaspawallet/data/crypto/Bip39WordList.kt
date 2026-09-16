@@ -235,8 +235,10 @@ object Bip39WordList {
         }
 
         for (i in 0 until csBits) {
+            val byteIdx = i / 8
             val bitIdx = 7 - (i % 8)
-            bits[entBits + i] = ((hash[0].toInt() shr bitIdx) and 1) == 1
+            val byteVal = hash[byteIdx].toInt() and 0xFF
+            bits[entBits + i] = ((byteVal ushr bitIdx) and 1) == 1
         }
 
         val wordCount = totalBits / 11
@@ -252,17 +254,18 @@ object Bip39WordList {
     }
 
     fun validateMnemonic(words: List<String>): Boolean {
-        if (words.size != 12 && words.size != 24) return false
-        val indices = IntArray(words.size)
-        for (i in words.indices) {
-            val idx = WORDS.indexOf(words[i].trim().lowercase())
+        val cleanWords = words.map { it.trim().lowercase() }.filter { it.isNotBlank() }
+        if (cleanWords.size !in listOf(12, 15, 18, 21, 24)) return false
+        val indices = IntArray(cleanWords.size)
+        for (i in cleanWords.indices) {
+            val idx = WORDS.indexOf(cleanWords[i])
             if (idx == -1) return false
             indices[i] = idx
         }
 
-        val totalBits = words.size * 11
+        val totalBits = cleanWords.size * 11
         val bits = BooleanArray(totalBits)
-        for (i in words.indices) {
+        for (i in cleanWords.indices) {
             val wordIdx = indices[i]
             for (b in 0 until 11) {
                 val bitPos = 10 - b
@@ -270,22 +273,24 @@ object Bip39WordList {
             }
         }
 
-        val csBits = words.size / 3
+        val csBits = cleanWords.size / 3
         val entBits = totalBits - csBits
         val entropy = ByteArray(entBits / 8)
         for (i in 0 until entBits) {
             val byteIdx = i / 8
             val bitIdx = 7 - (i % 8)
             if (bits[i]) {
-                entropy[byteIdx] = (entropy[byteIdx].toInt() or (1 shl bitIdx)).toByte()
+                entropy[byteIdx] = ((entropy[byteIdx].toInt() and 0xFF) or (1 shl bitIdx)).toByte()
             }
         }
 
         val md = MessageDigest.getInstance("SHA-256")
         val hash = md.digest(entropy)
         for (i in 0 until csBits) {
+            val byteIdx = i / 8
             val bitIdx = 7 - (i % 8)
-            val expectedBit = ((hash[0].toInt() shr bitIdx) and 1) == 1
+            val byteVal = hash[byteIdx].toInt() and 0xFF
+            val expectedBit = ((byteVal ushr bitIdx) and 1) == 1
             if (bits[entBits + i] != expectedBit) {
                 return false
             }

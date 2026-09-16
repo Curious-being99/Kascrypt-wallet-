@@ -796,7 +796,7 @@ fun WalletSetupWizard(
 
                                 // Word Validation Status
                                 val wordsList = importText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-                                val allWordsValid = wordsList.size in listOf(12, 24) && wordsList.all { Bip39WordList.isValidWord(it) }
+                                val allWordsValid = wordsList.size in listOf(12, 15, 18, 21, 24) && Bip39WordList.validateMnemonic(wordsList)
 
                                 if (wordsList.isNotEmpty()) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -820,7 +820,7 @@ fun WalletSetupWizard(
                         Spacer(modifier = Modifier.height(20.dp))
 
                         val wordsList = importText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-                        val canImport = wordsList.size in listOf(12, 24) && wordsList.all { Bip39WordList.isValidWord(it) }
+                        val canImport = wordsList.size in listOf(12, 15, 18, 21, 24) && Bip39WordList.validateMnemonic(wordsList)
 
                         Button(
                             onClick = {

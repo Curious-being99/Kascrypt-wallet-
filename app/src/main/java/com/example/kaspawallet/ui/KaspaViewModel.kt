@@ -378,8 +378,8 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
 
     fun triggerRescanActiveWallet(context: android.content.Context) {
         val activeWallet = _uiState.value.activeWallet ?: return
-        val words = activeWallet.encryptedMnemonic.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.size !in listOf(12, 24)) return
+        val words = repository.getWalletMnemonicWords(activeWallet)
+        if (words.isEmpty()) return
         _uiState.update { it.copy(showSetupWizard = true, setupWizardMode = "RESCAN") }
         startScanAndIndex(
             context = context,

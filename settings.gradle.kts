@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "KASCRYPT"
+rootProject.name = "Kascrypt"
 include(":app")

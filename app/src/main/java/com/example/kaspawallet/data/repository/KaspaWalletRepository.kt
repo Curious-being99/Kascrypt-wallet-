@@ -124,7 +124,7 @@ class KaspaWalletRepository(
         val wallet = database.walletDao().getWalletById(account.walletId)
         val words = getWalletMnemonicWords(wallet)
         val knownAddresses = mutableSetOf(account.address)
-        if (words.size in listOf(12, 24)) {
+        if (words.isNotEmpty()) {
             for (branch in 0..1) {
                 for (idx in 0 until 30) {
                     val addr = if (branch == 0) {
@@ -150,7 +150,7 @@ class KaspaWalletRepository(
         try {
             val wallet = database.walletDao().getWalletById(account.walletId)
             val words = getWalletMnemonicWords(wallet)
-            if (words.size in listOf(12, 24)) {
+            if (words.isNotEmpty()) {
                 val seed = KaspaCrypto.mnemonicToSeed(words)
                 val gapLimit = 30
                 val branchesToScan = listOf(
