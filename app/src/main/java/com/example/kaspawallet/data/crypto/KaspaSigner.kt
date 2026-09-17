@@ -319,6 +319,24 @@ object KaspaSigner {
         b.update(bytes)
     }
 
+    fun toCanonicalScriptPublicKey(inputScriptOrAddress: String, fallbackAddress: String = ""): String {
+        val clean = inputScriptOrAddress.trim().lowercase()
+        if (clean.isBlank()) {
+            return if (fallbackAddress.isNotBlank()) KaspaCrypto.decodeAddressToScriptPublicKey(fallbackAddress) else ""
+        }
+        if (clean.contains(":") || clean.startsWith("kaspa")) {
+            return KaspaCrypto.decodeAddressToScriptPublicKey(clean)
+        }
+        if (clean.all { it in '0'..'9' || it in 'a'..'f' }) {
+            if (clean.startsWith("20") && clean.endsWith("ac") && clean.length == 68) return clean
+            if (clean.startsWith("21") && clean.endsWith("ac") && clean.length == 70) return clean
+            if (clean.startsWith("aa20") && clean.endsWith("87") && clean.length == 72) return clean
+            if (clean.length == 64) return "20${clean}ac"
+            return clean
+        }
+        return if (fallbackAddress.isNotBlank()) KaspaCrypto.decodeAddressToScriptPublicKey(fallbackAddress) else clean
+    }
+
     /**
      * Authentic Kaspa Consensus Sighash calculation matching Rusty Kaspa `calc_schnorr_signature_hash`.
      * Uses Blake2b-256 keyed with "TransactionSigningHash".
@@ -396,8 +414,9 @@ object KaspaSigner {
         writeU32(finalHasher, targetInput.outpointIndex)
 
         // Target scriptPublicKey
-        val targetScriptHex = if (targetInput.scriptPublicKey.isNotBlank()) {
-            targetInput.scriptPublicKey
+        val rawScript = targetInput.scriptPublicKey
+        val targetScriptHex = if (rawScript.isNotBlank()) {
+            toCanonicalScriptPublicKey(rawScript)
         } else {
             outputs.lastOrNull()?.second ?: outputs.firstOrNull()?.second ?: ""
         }
@@ -526,7 +545,8 @@ object KaspaSigner {
 
             val fallbackScript = addressToScriptPublicKey(changeAddress)
             val sanitizedInputs = inputs.map { utxo ->
-                if (utxo.scriptPublicKey.isNotBlank()) utxo else utxo.copy(scriptPublicKey = fallbackScript)
+                val canonical = toCanonicalScriptPublicKey(utxo.scriptPublicKey, changeAddress)
+                utxo.copy(scriptPublicKey = if (canonical.isNotBlank()) canonical else fallbackScript)
             }
 
             // Convert recipient & change addresses into Kaspa ScriptPublicKeys
@@ -547,8 +567,11 @@ object KaspaSigner {
             for (i in sanitizedInputs.indices) {
                 val utxo = sanitizedInputs[i]
                 val cleanScript = utxo.scriptPublicKey.lowercase().trim()
+                val pubHex = cleanScript.removePrefix("20").removePrefix("21").removePrefix("aa20").removeSuffix("ac").removeSuffix("87")
+
                 // Find exact private key for this UTXO from receive (0/0..99) or change (1/0..99)
                 val privKey = accountKeyMap[cleanScript]
+                    ?: accountKeyMap[pubHex]
                     ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
                     ?: defaultPrivKey
 
@@ -600,7 +623,7 @@ object KaspaSigner {
             txInner.put("subnetworkId", "0000000000000000000000000000000000000000")
             txInner.put("gas", 0)
             txInner.put("payload", "")
-            val consensusMass = calculateTransactionMass(inputs.size, outputsList.size)
+            val consensusMass = calculateTransactionMass(sanitizedInputs.size, outputsList.size)
             txInner.put("mass", consensusMass)
 
             jsonTx.put("transaction", txInner)
@@ -609,7 +632,7 @@ object KaspaSigner {
             // Calculate authentic Kaspa Transaction ID
             val txId = computeTransactionId(
                 txVersion = 0,
-                inputs = inputs,
+                inputs = sanitizedInputs,
                 outputs = outputsList
             )
             return Pair(jsonTx.toString(), txId)
