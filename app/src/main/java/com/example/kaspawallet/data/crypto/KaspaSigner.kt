@@ -573,7 +573,7 @@ object KaspaSigner {
                 val privKey = accountKeyMap[cleanScript]
                     ?: accountKeyMap[pubHex]
                     ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
-                    ?: defaultPrivKey
+                    ?: throw IllegalStateException("Private key not found for UTXO script: $cleanScript")
 
                 // Compute real Kaspa consensus Blake2b sighash
                 val sighash = computeKaspaSighash(
