@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -109,48 +110,6 @@ fun OverviewTab(
                                 color = KaspaTextMuted,
                                 fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Address Pill
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(KaspaBackground.copy(alpha = 0.6f))
-                                .noRippleClickable {
-                                    activeAcc?.address?.let { addr ->
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clipboard.setPrimaryClip(ClipData.newPlainText("Kaspa Address", addr))
-                                        Toast.makeText(context, "Address copied", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Icon(
-                                    Icons.Outlined.AccountBalanceWallet,
-                                    contentDescription = null,
-                                    tint = KaspaPrimary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    KaspaUtils.truncateAddress(activeAcc?.address ?: "", 16, 10),
-                                    color = KaspaTextSecondary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Copy address",
-                                tint = KaspaPrimary,
-                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }

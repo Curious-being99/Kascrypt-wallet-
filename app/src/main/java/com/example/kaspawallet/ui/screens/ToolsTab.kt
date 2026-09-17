@@ -392,6 +392,23 @@ fun ToolsTab(
 
                                     Spacer(modifier = Modifier.height(12.dp))
                                     KaspaQrCode(content = genReceiveAddress, size = 150.dp, modifier = Modifier.align(Alignment.CenterHorizontally))
+
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Button(
+                                        onClick = {
+                                            viewModel.recoverAllChangeAddresses { count, sompi ->
+                                                val msg = if (count > 0) "Recovered $count change addresses (${KaspaUtils.formatSompi(sompi)} KAS)" else "All change addresses are consolidated"
+                                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = KaspaPrimary),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFF003731), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Scan & Recover Change Funds (m/44'/111111'/0'/1/0..29)", color = Color(0xFF003731), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
                                 }
                             }
                         }

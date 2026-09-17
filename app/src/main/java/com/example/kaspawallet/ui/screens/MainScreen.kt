@@ -289,6 +289,7 @@ fun MainScreen(
             activeAccount = state.activeAccount,
             activeWallet = state.activeWallet,
             network = state.network,
+            viewModel = viewModel,
             onDismiss = { viewModel.setShowReceiveDialog(false) }
         )
     }

@@ -20,6 +20,21 @@ object KaspaUtils {
         return Bip39WordList.validateMnemonic(mnemonicWords)
     }
 
+    /**
+     * Ensures an address is properly formatted with the active network prefix (kaspa, kaspatest, etc.)
+     */
+    fun formatAddressForNetwork(address: String, network: KaspaNetwork): String {
+        if (address.isBlank()) return ""
+        val targetPrefix = when (network) {
+            KaspaNetwork.MAINNET -> "kaspa"
+            KaspaNetwork.TESTNET_10, KaspaNetwork.TESTNET_11 -> "kaspatest"
+            KaspaNetwork.DEVNET -> "kaspadev"
+            KaspaNetwork.SIMNET -> "kaspasim"
+        }
+        if (address.startsWith("$targetPrefix:")) return address
+        return KaspaCrypto.convertAddressPrefix(address, targetPrefix)
+    }
+
     fun generateDeterministicAddress(
         mnemonicWords: List<String>,
         accountIndex: Int,

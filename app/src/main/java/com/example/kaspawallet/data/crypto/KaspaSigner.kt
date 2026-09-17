@@ -106,6 +106,7 @@ object KaspaSigner {
 
         var masterKey = BigInteger(1, i.copyOfRange(0, 32)).mod(N)
         var chainCode = i.copyOfRange(32, 64)
+        i.fill(0)
 
         val path = intArrayOf(
             44 or -0x80000000,
@@ -122,31 +123,41 @@ object KaspaSigner {
 
             val data: ByteArray
             if (isHardened) {
+                val masterBytes = to32Bytes(masterKey)
                 data = ByteBuffer.allocate(37)
                     .order(ByteOrder.BIG_ENDIAN)
                     .put(0.toByte())
-                    .put(to32Bytes(masterKey))
+                    .put(masterBytes)
                     .putInt(idx)
                     .array()
+                masterBytes.fill(0)
             } else {
                 val point = scalarMultiply(masterKey, G)
                 val pubKeyHeader = if (point.y.testBit(0)) 0x03.toByte() else 0x02.toByte()
                 val compressedPub = ByteArray(33)
                 compressedPub[0] = pubKeyHeader
-                System.arraycopy(to32Bytes(point.x), 0, compressedPub, 1, 32)
+                val pxBytes = to32Bytes(point.x)
+                System.arraycopy(pxBytes, 0, compressedPub, 1, 32)
+                pxBytes.fill(0)
 
                 data = ByteBuffer.allocate(37)
                     .order(ByteOrder.BIG_ENDIAN)
                     .put(compressedPub)
                     .putInt(idx)
                     .array()
+                compressedPub.fill(0)
             }
 
             val stepI = macStep.doFinal(data)
+            data.fill(0)
             val stepIL = BigInteger(1, stepI.copyOfRange(0, 32)).mod(N)
             masterKey = (stepIL.add(masterKey)).mod(N)
+            val oldChainCode = chainCode
             chainCode = stepI.copyOfRange(32, 64)
+            oldChainCode.fill(0)
+            stepI.fill(0)
         }
+        chainCode.fill(0)
         return to32Bytes(masterKey)
     }
 
@@ -170,7 +181,11 @@ object KaspaSigner {
         network: KaspaNetwork = KaspaNetwork.MAINNET
     ): String {
         val privKey = derivePrivateKey(seed, accountIndex, branch, addressIndex)
-        val pubKey = derivePublicKey(privKey)
+        val pubKey = try {
+            derivePublicKey(privKey)
+        } finally {
+            privKey.fill(0) // Wipe private key from memory once derived
+        }
         val prefix = when (network) {
             KaspaNetwork.MAINNET -> "kaspa"
             KaspaNetwork.TESTNET_10, KaspaNetwork.TESTNET_11 -> "kaspatest"
@@ -227,6 +242,17 @@ object KaspaSigner {
         val signature = ByteArray(64)
         System.arraycopy(rxBytes, 0, signature, 0, 32)
         System.arraycopy(sBytes, 0, signature, 32, 32)
+
+        // Securely zeroize sensitive intermediate buffers from memory once signed
+        dBytes.fill(0)
+        auxHash.fill(0)
+        t.fill(0)
+        pxBytes.fill(0)
+        nonceInput.fill(0)
+        rxBytes.fill(0)
+        challengeInput.fill(0)
+        sBytes.fill(0)
+
         return signature
     }
 
@@ -491,97 +517,103 @@ object KaspaSigner {
         // Pre-derive all 60 signing keys (30 receive + 30 change) for flawless multi-input signing
         val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 30, network = network)
         val defaultPrivKey = derivePrivateKey(seed, accountIndex, branch = inputBranch, addressIndex = inputAddressIndex)
-        val totalInputAmount = inputs.sumOf { it.amountSompi }
-        require(totalInputAmount >= amountSompi + feeSompi) {
-            "Total input amount ($totalInputAmount Sompi) is insufficient to cover payment ($amountSompi Sompi) and fee ($feeSompi Sompi)"
-        }
-        val changeAmount = totalInputAmount - amountSompi - feeSompi
+        try {
+            val totalInputAmount = inputs.sumOf { it.amountSompi }
+            require(totalInputAmount >= amountSompi + feeSompi) {
+                "Total input amount ($totalInputAmount Sompi) is insufficient to cover payment ($amountSompi Sompi) and fee ($feeSompi Sompi)"
+            }
+            val changeAmount = totalInputAmount - amountSompi - feeSompi
 
-        // Convert recipient & change addresses into Kaspa ScriptPublicKeys
-        val recipientScript = addressToScriptPublicKey(recipientAddress)
-        val outputsList = mutableListOf<Pair<Long, String>>()
-        outputsList.add(Pair(amountSompi, recipientScript))
+            // Convert recipient & change addresses into Kaspa ScriptPublicKeys
+            val recipientScript = addressToScriptPublicKey(recipientAddress)
+            val outputsList = mutableListOf<Pair<Long, String>>()
+            outputsList.add(Pair(amountSompi, recipientScript))
 
-        if (changeAmount > 0) {
-            val changeScript = addressToScriptPublicKey(changeAddress)
-            outputsList.add(Pair(changeAmount, changeScript))
-        }
+            if (changeAmount > 0) {
+                val changeScript = addressToScriptPublicKey(changeAddress)
+                outputsList.add(Pair(changeAmount, changeScript))
+            }
 
-        val jsonTx = JSONObject()
-        val txInner = JSONObject()
-        txInner.put("version", 0)
+            val jsonTx = JSONObject()
+            val txInner = JSONObject()
+            txInner.put("version", 0)
 
-        val jsonInputs = JSONArray()
-        for (i in inputs.indices) {
-            val utxo = inputs[i]
-            val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
-            val cleanScript = effectiveScript.lowercase().trim()
-            // Find the exact private key for this UTXO from receive (0/0..29) or change (1/0..29)
-            val privKey = accountKeyMap[cleanScript]
-                ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
-                ?: defaultPrivKey
+            val jsonInputs = JSONArray()
+            for (i in inputs.indices) {
+                val utxo = inputs[i]
+                val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
+                val cleanScript = effectiveScript.lowercase().trim()
+                // Find the exact private key for this UTXO from receive (0/0..29) or change (1/0..29)
+                val privKey = accountKeyMap[cleanScript]
+                    ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
+                    ?: defaultPrivKey
 
-            // Compute real Kaspa consensus Blake2b sighash
-            val sighash = computeKaspaSighash(
+                // Compute real Kaspa consensus Blake2b sighash
+                val sighash = computeKaspaSighash(
+                    txVersion = 0,
+                    inputs = inputs,
+                    outputs = outputsList,
+                    inputIndex = i
+                )
+                // Sign with authentic BIP-340 Schnorr
+                val schnorrSig = signSchnorr(privKey, sighash)
+
+                // Kaspa SignatureScript format: <0x41 OP_DATA_65> <64-byte Schnorr Sig> <0x01 SIGHASH_ALL>
+                val sigScriptBytes = ByteArray(66)
+                sigScriptBytes[0] = 0x41.toByte()
+                System.arraycopy(schnorrSig, 0, sigScriptBytes, 1, 64)
+                sigScriptBytes[65] = 0x01.toByte()
+
+                val sigScriptHex = byteArrayToHexString(sigScriptBytes)
+
+                val inputObj = JSONObject()
+                val previousOutpoint = JSONObject()
+                previousOutpoint.put("transactionId", utxo.outpointTxId)
+                previousOutpoint.put("index", utxo.outpointIndex)
+
+                inputObj.put("previousOutpoint", previousOutpoint)
+                inputObj.put("signatureScript", sigScriptHex)
+                inputObj.put("sequence", 0)
+                inputObj.put("sigOpCount", 1)
+
+                jsonInputs.put(inputObj)
+            }
+            txInner.put("inputs", jsonInputs)
+
+            val jsonOutputs = JSONArray()
+            for (out in outputsList) {
+                val outputObj = JSONObject()
+                outputObj.put("amount", out.first)
+                val scriptObj = JSONObject()
+                scriptObj.put("version", 0)
+                scriptObj.put("scriptPublicKey", out.second)
+                outputObj.put("scriptPublicKey", scriptObj)
+                jsonOutputs.put(outputObj)
+            }
+            txInner.put("outputs", jsonOutputs)
+
+            txInner.put("lockTime", 0)
+            txInner.put("subnetworkId", "0000000000000000000000000000000000000000")
+            txInner.put("gas", 0)
+            txInner.put("payload", "")
+            val consensusMass = calculateTransactionMass(inputs.size, outputsList.size)
+            txInner.put("mass", consensusMass)
+
+            jsonTx.put("transaction", txInner)
+            jsonTx.put("allowOrphan", false)
+
+            // Calculate authentic Kaspa Transaction ID
+            val txId = computeTransactionId(
                 txVersion = 0,
                 inputs = inputs,
-                outputs = outputsList,
-                inputIndex = i
+                outputs = outputsList
             )
-            // Sign with authentic BIP-340 Schnorr
-            val schnorrSig = signSchnorr(privKey, sighash)
-
-            // Kaspa SignatureScript format: <0x41 OP_DATA_65> <64-byte Schnorr Sig> <0x01 SIGHASH_ALL>
-            val sigScriptBytes = ByteArray(66)
-            sigScriptBytes[0] = 0x41.toByte()
-            System.arraycopy(schnorrSig, 0, sigScriptBytes, 1, 64)
-            sigScriptBytes[65] = 0x01.toByte()
-
-            val sigScriptHex = byteArrayToHexString(sigScriptBytes)
-
-            val inputObj = JSONObject()
-            val previousOutpoint = JSONObject()
-            previousOutpoint.put("transactionId", utxo.outpointTxId)
-            previousOutpoint.put("index", utxo.outpointIndex)
-
-            inputObj.put("previousOutpoint", previousOutpoint)
-            inputObj.put("signatureScript", sigScriptHex)
-            inputObj.put("sequence", 0)
-            inputObj.put("sigOpCount", 1)
-
-            jsonInputs.put(inputObj)
+            return Pair(jsonTx.toString(), txId)
+        } finally {
+            // Securely wipe all derived private keys from memory
+            accountKeyMap.values.forEach { it.fill(0) }
+            defaultPrivKey.fill(0)
         }
-        txInner.put("inputs", jsonInputs)
-
-        val jsonOutputs = JSONArray()
-        for (out in outputsList) {
-            val outputObj = JSONObject()
-            outputObj.put("amount", out.first)
-            val scriptObj = JSONObject()
-            scriptObj.put("version", 0)
-            scriptObj.put("scriptPublicKey", out.second)
-            outputObj.put("scriptPublicKey", scriptObj)
-            jsonOutputs.put(outputObj)
-        }
-        txInner.put("outputs", jsonOutputs)
-
-        txInner.put("lockTime", 0)
-        txInner.put("subnetworkId", "0000000000000000000000000000000000000000")
-        txInner.put("gas", 0)
-        txInner.put("payload", "")
-        val consensusMass = calculateTransactionMass(inputs.size, outputsList.size)
-        txInner.put("mass", consensusMass)
-
-        jsonTx.put("transaction", txInner)
-        jsonTx.put("allowOrphan", false)
-
-        // Calculate authentic Kaspa Transaction ID
-        val txId = computeTransactionId(
-            txVersion = 0,
-            inputs = inputs,
-            outputs = outputsList
-        )
-        return Pair(jsonTx.toString(), txId)
     }
 
     /**
@@ -598,92 +630,98 @@ object KaspaSigner {
     ): Pair<String, String> {
         val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 30, network = network)
         val defaultPrivKey = derivePrivateKey(seed, accountIndex, branch = 0, addressIndex = 0)
-        val totalPayment = recipients.sumOf { it.second }
-        val totalInputAmount = inputs.sumOf { it.amountSompi }
-        require(totalInputAmount >= totalPayment + feeSompi) {
-            "Total input amount ($totalInputAmount Sompi) is insufficient to cover payment ($totalPayment Sompi) and fee ($feeSompi Sompi)"
-        }
-        val changeAmount = totalInputAmount - totalPayment - feeSompi
+        try {
+            val totalPayment = recipients.sumOf { it.second }
+            val totalInputAmount = inputs.sumOf { it.amountSompi }
+            require(totalInputAmount >= totalPayment + feeSompi) {
+                "Total input amount ($totalInputAmount Sompi) is insufficient to cover payment ($totalPayment Sompi) and fee ($feeSompi Sompi)"
+            }
+            val changeAmount = totalInputAmount - totalPayment - feeSompi
 
-        val outputsList = mutableListOf<Pair<Long, String>>()
-        for ((addr, amt) in recipients) {
-            outputsList.add(Pair(amt, addressToScriptPublicKey(addr)))
-        }
-        if (changeAmount > 0) {
-            val changeScript = addressToScriptPublicKey(changeAddress)
-            outputsList.add(Pair(changeAmount, changeScript))
-        }
+            val outputsList = mutableListOf<Pair<Long, String>>()
+            for ((addr, amt) in recipients) {
+                outputsList.add(Pair(amt, addressToScriptPublicKey(addr)))
+            }
+            if (changeAmount > 0) {
+                val changeScript = addressToScriptPublicKey(changeAddress)
+                outputsList.add(Pair(changeAmount, changeScript))
+            }
 
-        val jsonTx = JSONObject()
-        val txInner = JSONObject()
-        txInner.put("version", 0)
+            val jsonTx = JSONObject()
+            val txInner = JSONObject()
+            txInner.put("version", 0)
 
-        val jsonInputs = JSONArray()
-        for (i in inputs.indices) {
-            val utxo = inputs[i]
-            val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
-            val cleanScript = effectiveScript.lowercase().trim()
-            val privKey = accountKeyMap[cleanScript]
-                ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
-                ?: defaultPrivKey
+            val jsonInputs = JSONArray()
+            for (i in inputs.indices) {
+                val utxo = inputs[i]
+                val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
+                val cleanScript = effectiveScript.lowercase().trim()
+                val privKey = accountKeyMap[cleanScript]
+                    ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
+                    ?: defaultPrivKey
 
-            val sighash = computeKaspaSighash(
+                val sighash = computeKaspaSighash(
+                    txVersion = 0,
+                    inputs = inputs,
+                    outputs = outputsList,
+                    inputIndex = i
+                )
+                val schnorrSig = signSchnorr(privKey, sighash)
+
+                val sigScriptBytes = ByteArray(66)
+                sigScriptBytes[0] = 0x41.toByte()
+                System.arraycopy(schnorrSig, 0, sigScriptBytes, 1, 64)
+                sigScriptBytes[65] = 0x01.toByte()
+
+                val sigScriptHex = byteArrayToHexString(sigScriptBytes)
+
+                val inputObj = JSONObject()
+                val previousOutpoint = JSONObject()
+                previousOutpoint.put("transactionId", utxo.outpointTxId)
+                previousOutpoint.put("index", utxo.outpointIndex)
+
+                inputObj.put("previousOutpoint", previousOutpoint)
+                inputObj.put("signatureScript", sigScriptHex)
+                inputObj.put("sequence", 0)
+                inputObj.put("sigOpCount", 1)
+
+                jsonInputs.put(inputObj)
+            }
+            txInner.put("inputs", jsonInputs)
+
+            val jsonOutputs = JSONArray()
+            for (out in outputsList) {
+                val outputObj = JSONObject()
+                outputObj.put("amount", out.first)
+                val scriptObj = JSONObject()
+                scriptObj.put("version", 0)
+                scriptObj.put("scriptPublicKey", out.second)
+                outputObj.put("scriptPublicKey", scriptObj)
+                jsonOutputs.put(outputObj)
+            }
+            txInner.put("outputs", jsonOutputs)
+
+            txInner.put("lockTime", 0)
+            txInner.put("subnetworkId", "0000000000000000000000000000000000000000")
+            txInner.put("gas", 0)
+            txInner.put("payload", "")
+            val consensusMass = calculateTransactionMass(inputs.size, outputsList.size)
+            txInner.put("mass", consensusMass)
+
+            jsonTx.put("transaction", txInner)
+            jsonTx.put("allowOrphan", false)
+
+            val txId = computeTransactionId(
                 txVersion = 0,
                 inputs = inputs,
-                outputs = outputsList,
-                inputIndex = i
+                outputs = outputsList
             )
-            val schnorrSig = signSchnorr(privKey, sighash)
-
-            val sigScriptBytes = ByteArray(66)
-            sigScriptBytes[0] = 0x41.toByte()
-            System.arraycopy(schnorrSig, 0, sigScriptBytes, 1, 64)
-            sigScriptBytes[65] = 0x01.toByte()
-
-            val sigScriptHex = byteArrayToHexString(sigScriptBytes)
-
-            val inputObj = JSONObject()
-            val previousOutpoint = JSONObject()
-            previousOutpoint.put("transactionId", utxo.outpointTxId)
-            previousOutpoint.put("index", utxo.outpointIndex)
-
-            inputObj.put("previousOutpoint", previousOutpoint)
-            inputObj.put("signatureScript", sigScriptHex)
-            inputObj.put("sequence", 0)
-            inputObj.put("sigOpCount", 1)
-
-            jsonInputs.put(inputObj)
+            return Pair(jsonTx.toString(), txId)
+        } finally {
+            // Securely wipe all derived private keys from memory
+            accountKeyMap.values.forEach { it.fill(0) }
+            defaultPrivKey.fill(0)
         }
-        txInner.put("inputs", jsonInputs)
-
-        val jsonOutputs = JSONArray()
-        for (out in outputsList) {
-            val outputObj = JSONObject()
-            outputObj.put("amount", out.first)
-            val scriptObj = JSONObject()
-            scriptObj.put("version", 0)
-            scriptObj.put("scriptPublicKey", out.second)
-            outputObj.put("scriptPublicKey", scriptObj)
-            jsonOutputs.put(outputObj)
-        }
-        txInner.put("outputs", jsonOutputs)
-
-        txInner.put("lockTime", 0)
-        txInner.put("subnetworkId", "0000000000000000000000000000000000000000")
-        txInner.put("gas", 0)
-        txInner.put("payload", "")
-        val consensusMass = calculateTransactionMass(inputs.size, outputsList.size)
-        txInner.put("mass", consensusMass)
-
-        jsonTx.put("transaction", txInner)
-        jsonTx.put("allowOrphan", false)
-
-        val txId = computeTransactionId(
-            txVersion = 0,
-            inputs = inputs,
-            outputs = outputsList
-        )
-        return Pair(jsonTx.toString(), txId)
     }
 
     /**

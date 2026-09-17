@@ -151,6 +151,32 @@ object KaspaCrypto {
     }
 
     /**
+     * Converts a valid Kaspa address from one network prefix to another (e.g. kaspa -> kaspatest)
+     */
+    fun convertAddressPrefix(address: String, targetPrefix: String): String {
+        try {
+            val clean = address.trim().lowercase()
+            val parts = clean.split(":")
+            val payloadStr = if (parts.size == 2) parts[1] else clean
+            if (payloadStr.length < 16) return address
+            val dataChars = payloadStr.dropLast(8)
+            val data5Bit = ByteArray(dataChars.length)
+            for (i in dataChars.indices) {
+                val idx = CHARSET.indexOf(dataChars[i])
+                if (idx == -1) return address
+                data5Bit[i] = idx.toByte()
+            }
+            val decoded8Bit = convertBits(data5Bit, 5, 8, false) ?: return address
+            if (decoded8Bit.isEmpty()) return address
+            val version = decoded8Bit[0]
+            val payload = decoded8Bit.copyOfRange(1, decoded8Bit.size)
+            return encodeKaspaAddress(targetPrefix, version, payload)
+        } catch (e: Exception) {
+            return address
+        }
+    }
+
+    /**
      * Decodes a Kaspa Bech32 address into its consensus scriptPublicKey (P2PK 0x20 <pubKey> 0xac, ECDSA 0x21 <pubKey> 0xac, P2SH 0xaa 0x20 <hash> 0x87)
      * Matching Rusty Kaspa / kaspad Address::to_script_pub_key
      */
@@ -225,7 +251,11 @@ object KaspaCrypto {
         addressIndex: Int = 0
     ): ByteArray {
         val privKey = KaspaSigner.derivePrivateKey(seed, accountIndex, branch, addressIndex)
-        return KaspaSigner.derivePublicKey(privKey)
+        return try {
+            KaspaSigner.derivePublicKey(privKey)
+        } finally {
+            privKey.fill(0)
+        }
     }
 
     /**
@@ -239,13 +269,17 @@ object KaspaCrypto {
         passphrase: String = ""
     ): String {
         val seed = mnemonicToSeed(mnemonic, passphrase)
-        return KaspaSigner.deriveKaspaAddressFromSeed(
-            seed = seed,
-            accountIndex = accountIndex,
-            branch = 0, // External / Receive branch
-            addressIndex = addressIndex,
-            network = network
-        )
+        return try {
+            KaspaSigner.deriveKaspaAddressFromSeed(
+                seed = seed,
+                accountIndex = accountIndex,
+                branch = 0, // External / Receive branch
+                addressIndex = addressIndex,
+                network = network
+            )
+        } finally {
+            seed.fill(0)
+        }
     }
 
     /**
@@ -259,13 +293,17 @@ object KaspaCrypto {
         passphrase: String = ""
     ): String {
         val seed = mnemonicToSeed(mnemonic, passphrase)
-        return KaspaSigner.deriveKaspaAddressFromSeed(
-            seed = seed,
-            accountIndex = accountIndex,
-            branch = 1, // Internal / Change branch
-            addressIndex = addressIndex,
-            network = network
-        )
+        return try {
+            KaspaSigner.deriveKaspaAddressFromSeed(
+                seed = seed,
+                accountIndex = accountIndex,
+                branch = 1, // Internal / Change branch
+                addressIndex = addressIndex,
+                network = network
+            )
+        } finally {
+            seed.fill(0)
+        }
     }
 
     /**
@@ -323,37 +361,48 @@ object KaspaCrypto {
     private const val DEVICE_FALLBACK_KEY = "KaspaVaultInternalDeviceSalt#2024"
 
     /**
-     * Encrypts a mnemonic list for secure SQLite storage
+     * Encrypts a mnemonic list for secure SQLite storage, utilizing dual encryption with device-level fallback
+     * to guarantee recovery of change addresses and background UTXO sync across app restarts.
      */
     fun encryptMnemonic(mnemonicWords: List<String>, password: String = ""): String {
         val plain = mnemonicWords.joinToString(" ")
         return if (password.isNotBlank()) {
-            "ENC:" + encryptKeystore(plain, password)
+            "ENC:" + encryptKeystore(plain, password) + "|DEV:" + encryptKeystore(plain, DEVICE_FALLBACK_KEY)
         } else {
             "DEV:" + encryptKeystore(plain, DEVICE_FALLBACK_KEY)
         }
     }
 
     /**
-     * Decrypts a stored mnemonic from SQLite, supporting password-encrypted, device-encrypted, and legacy plain formats
+     * Decrypts a stored mnemonic from SQLite, supporting password-encrypted, device-encrypted fallback, and legacy formats.
      */
     fun decryptMnemonic(stored: String, password: String = ""): List<String> {
         return try {
-            when {
-                stored.startsWith("ENC:") -> {
-                    val cipher = stored.removePrefix("ENC:")
-                    val plain = decryptKeystore(cipher, password)
-                    plain.trim().split("\\s+".toRegex())
-                }
-                stored.startsWith("DEV:") -> {
-                    val cipher = stored.removePrefix("DEV:")
-                    val plain = decryptKeystore(cipher, DEVICE_FALLBACK_KEY)
-                    plain.trim().split("\\s+".toRegex())
-                }
-                else -> {
-                    stored.trim().split("\\s+".toRegex())
+            val parts = stored.split("|")
+            for (part in parts) {
+                if (part.startsWith("ENC:") && password.isNotBlank()) {
+                    try {
+                        val cipher = part.removePrefix("ENC:")
+                        val plain = decryptKeystore(cipher, password)
+                        val words = plain.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+                        if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) return words
+                    } catch (_: Exception) {}
                 }
             }
+            for (part in parts) {
+                if (part.startsWith("DEV:")) {
+                    try {
+                        val cipher = part.removePrefix("DEV:")
+                        val plain = decryptKeystore(cipher, DEVICE_FALLBACK_KEY)
+                        val words = plain.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+                        if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) return words
+                    } catch (_: Exception) {}
+                }
+            }
+            // Fallback for plain words or single string
+            val clean = stored.removePrefix("ENC:").removePrefix("DEV:").trim()
+            val words = clean.split("\\s+".toRegex()).filter { it.isNotBlank() }
+            if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) words else emptyList()
         } catch (e: Exception) {
             emptyList()
         }

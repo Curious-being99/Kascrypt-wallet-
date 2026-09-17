@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.FragmentActivity
+import com.example.kaspawallet.data.crypto.Bip39WordList
 import com.example.kaspawallet.data.crypto.KaspaCrypto
 import com.example.kaspawallet.data.security.BiometricAuthManager
 import com.example.kaspawallet.data.crypto.KaspaSigner
@@ -697,6 +698,7 @@ fun ReceiveKasDialog(
     activeAccount: AccountEntity?,
     activeWallet: WalletEntity? = null,
     network: KaspaNetwork = KaspaNetwork.MAINNET,
+    viewModel: KaspaViewModel? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -714,9 +716,7 @@ fun ReceiveKasDialog(
     }
 
     val displayAddress = remember(activeAccount, words, selectedBranch, addressIndex, network) {
-        if (selectedBranch == 0 && addressIndex == 0 && activeAccount != null) {
-            activeAccount.address
-        } else if (words.isNotEmpty() && activeAccount != null) {
+        if (words.isNotEmpty() && activeAccount != null) {
             val seed = KaspaCrypto.mnemonicToSeed(words)
             KaspaSigner.deriveKaspaAddressFromSeed(
                 seed = seed,
@@ -725,8 +725,10 @@ fun ReceiveKasDialog(
                 addressIndex = addressIndex,
                 network = network
             )
+        } else if (activeAccount != null) {
+            KaspaUtils.formatAddressForNetwork(activeAccount.address, network)
         } else {
-            activeAccount?.address ?: "kaspa:address"
+            "kaspa:address"
         }
     }
 
@@ -997,6 +999,72 @@ fun ReceiveKasDialog(
                                         fontSize = 10.sp,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                     )
+                                }
+                            }
+                        }
+                    }
+
+                    // Change Address Recovery Action Card
+                    if (selectedBranch == 1) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = KaspaSurfaceVariant),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = KaspaPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        "Recover Change Address Funds",
+                                        color = KaspaTextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Text(
+                                    "If funds were directed to Change Index #$addressIndex, sweep them directly into your primary address.",
+                                    color = KaspaTextSecondary,
+                                    fontSize = 11.sp
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            viewModel?.recoverChangeAddressFunds(branch = 1, addressIndex = addressIndex) { success, msg ->
+                                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("Sweep #$addressIndex", fontSize = 11.sp, color = KaspaPrimary)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            viewModel?.recoverAllChangeAddresses { count, sompi ->
+                                                val msg = if (count > 0) "Recovered $count change addresses (${KaspaUtils.formatSompi(sompi)} KAS)" else "All change addresses already consolidated"
+                                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = KaspaPrimary),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("Sweep All", fontSize = 11.sp, color = Color(0xFF003731), fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
                         }
@@ -1871,10 +1939,15 @@ fun ImportWalletDialog(
     var seedPhrase by remember { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val wordCount = remember(seedPhrase) {
-        seedPhrase.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+    val wordsList = remember(seedPhrase) {
+        seedPhrase.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
     }
-    val isValidSeed = wordCount in listOf(12, 18, 24)
+    val wordCount = wordsList.size
+    val isStandardLength = wordCount in listOf(12, 15, 18, 21, 24)
+    val invalidWords = remember(wordsList) {
+        wordsList.filter { !Bip39WordList.isValidWord(it) }
+    }
+    val isValidSeed = isStandardLength && invalidWords.isEmpty() && Bip39WordList.validateMnemonic(wordsList)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1985,15 +2058,22 @@ fun ImportWalletDialog(
                 ) {
                     Text(
                         "Word Count: $wordCount words",
-                        color = if (isValidSeed) KaspaPrimaryGlow else KaspaTextMuted,
+                        color = if (isValidSeed) KaspaSuccess else if (isStandardLength) KaspaPrimaryGlow else KaspaTextMuted,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
-                    if (seedPhrase.isNotBlank() && !isValidSeed) {
+                    if (seedPhrase.isNotBlank()) {
+                        val statusMsg = when {
+                            invalidWords.isNotEmpty() -> "Unrecognized word: ${invalidWords.first()}"
+                            isValidSeed -> "Valid BIP-39 Checksum"
+                            isStandardLength -> "Invalid checksum - verify words"
+                            else -> "Expected 12, 15, 18, 21, 24 words"
+                        }
                         Text(
-                            "Expected 12, 18 or 24 words",
-                            color = KaspaError,
-                            fontSize = 11.sp
+                            statusMsg,
+                            color = if (isValidSeed) KaspaSuccess else KaspaError,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }

@@ -796,20 +796,28 @@ fun WalletSetupWizard(
 
                                 // Word Validation Status
                                 val wordsList = importText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-                                val allWordsValid = wordsList.size in listOf(12, 15, 18, 21, 24) && Bip39WordList.validateMnemonic(wordsList)
+                                val isStandardLength = wordsList.size in listOf(12, 15, 18, 21, 24)
+                                val invalidWords = wordsList.filter { !Bip39WordList.isValidWord(it) }
+                                val checksumValid = isStandardLength && invalidWords.isEmpty() && Bip39WordList.validateMnemonic(wordsList)
 
                                 if (wordsList.isNotEmpty()) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
-                                            if (allWordsValid) Icons.Default.CheckCircle else Icons.Default.Info,
+                                            if (checksumValid) Icons.Default.CheckCircle else if (invalidWords.isNotEmpty()) Icons.Default.ErrorOutline else Icons.Default.Info,
                                             contentDescription = null,
-                                            tint = if (allWordsValid) KaspaSuccess else KaspaWarning,
+                                            tint = if (checksumValid) KaspaSuccess else if (invalidWords.isNotEmpty()) KaspaError else KaspaWarning,
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
+                                        val statusText = when {
+                                            invalidWords.isNotEmpty() -> "Unrecognized word: ${invalidWords.first()}"
+                                            checksumValid -> "Valid ${wordsList.size}-word BIP-39 secret phrase"
+                                            isStandardLength -> "Invalid checksum - please verify word sequence"
+                                            else -> "${wordsList.size} / $wordCount words entered"
+                                        }
                                         Text(
-                                            if (allWordsValid) "Valid ${wordsList.size}-word BIP39 mnemonic" else "${wordsList.size} / $wordCount words entered",
-                                            color = if (allWordsValid) KaspaSuccess else KaspaTextSecondary,
+                                            statusText,
+                                            color = if (checksumValid) KaspaSuccess else if (invalidWords.isNotEmpty()) KaspaError else KaspaTextSecondary,
                                             fontSize = 12.sp
                                         )
                                     }

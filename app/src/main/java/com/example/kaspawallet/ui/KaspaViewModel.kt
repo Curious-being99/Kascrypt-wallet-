@@ -3,6 +3,7 @@ package com.example.kaspawallet.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.kaspawallet.data.crypto.Bip39WordList
 import com.example.kaspawallet.data.crypto.KaspaCrypto
 import com.example.kaspawallet.data.crypto.KaspaUtils
 import com.example.kaspawallet.data.model.*
@@ -346,33 +347,29 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         password: String = ""
     ) {
         viewModelScope.launch {
-            val words = mnemonicPhrase.trim().split(Regex("\\s+"))
-            if (words.size != 12 && words.size != 24) {
-                _uiState.update { it.copy(errorMessage = "Seed phrase must be 12 or 24 words") }
+            val words = mnemonicPhrase.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size !in listOf(12, 15, 18, 21, 24)) {
+                _uiState.update { it.copy(errorMessage = "Seed phrase must be 12, 15, 18, 21, or 24 words") }
                 return@launch
             }
-            _uiState.update { it.copy(isLoading = true) }
-            try {
-                if (network != _uiState.value.network) {
-                    repository.setNetwork(network)
-                }
-                val (wallet, account) = repository.createWallet(name, words, passphrase.isNotBlank())
-                saveWalletPassword(context, wallet.id, password)
-                _uiState.update { current ->
-                    val updatedWallets = if (current.wallets.any { it.id == wallet.id }) current.wallets else current.wallets + wallet
-                    current.copy(
-                        isLoading = false,
-                        wallets = updatedWallets,
-                        activeWallet = wallet,
-                        activeAccount = account,
-                        showImportWalletDialog = false,
-                        showSetupWizard = false,
-                        statusMessage = "Kaspa Wallet '${wallet.name}' imported successfully"
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(isLoading = false, errorMessage = e.localizedMessage ?: "Failed to import wallet") }
+            if (!Bip39WordList.validateMnemonic(words)) {
+                _uiState.update { it.copy(errorMessage = "Secret phrase has an invalid BIP-39 checksum") }
+                return@launch
             }
+            _uiState.update { it.copy(showImportWalletDialog = false) }
+            if (network != _uiState.value.network) {
+                repository.setNetwork(network)
+            }
+            startScanAndIndex(
+                context = context,
+                name = name.trim().ifBlank { "Imported Wallet" },
+                words = words,
+                hasPassphrase = passphrase.isNotBlank(),
+                passphrase = passphrase,
+                network = network,
+                password = password,
+                isImport = true
+            )
         }
     }
 
@@ -929,6 +926,37 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                     )
                 }
             }
+        }
+    }
+
+    fun recoverChangeAddressFunds(branch: Int = 1, addressIndex: Int = 0, onResult: ((Boolean, String) -> Unit)? = null) {
+        val account = _uiState.value.activeAccount ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val (success, message) = repository.recoverChangeAddressFunds(account, branch, addressIndex)
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    statusMessage = if (success) message else it.statusMessage,
+                    errorMessage = if (!success) message else null
+                )
+            }
+            onResult?.invoke(success, message)
+        }
+    }
+
+    fun recoverAllChangeAddresses(onResult: ((Int, Long) -> Unit)? = null) {
+        val account = _uiState.value.activeAccount ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, statusMessage = "Scanning & recovering funds from all change addresses...") }
+            val (count, sompi) = repository.recoverAllChangeAddresses(account)
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    statusMessage = if (count > 0) "Recovered funds from $count change addresses (${KaspaUtils.formatSompi(sompi)} KAS)" else "All change addresses are fully consolidated"
+                )
+            }
+            onResult?.invoke(count, sompi)
         }
     }
 

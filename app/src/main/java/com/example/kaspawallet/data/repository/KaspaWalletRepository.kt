@@ -152,50 +152,54 @@ class KaspaWalletRepository(
             val words = getWalletMnemonicWords(wallet)
             if (words.isNotEmpty()) {
                 val seed = KaspaCrypto.mnemonicToSeed(words)
-                val gapLimit = 30
-                val branchesToScan = listOf(
-                    0 to (1 until gapLimit).toList(), // m/44'/111111'/0'/0/1..29
-                    1 to (0 until gapLimit).toList()  // m/44'/111111'/0'/1/0..29
-                )
+                try {
+                    val gapLimit = 30
+                    val branchesToScan = listOf(
+                        0 to (1 until gapLimit).toList(), // m/44'/111111'/0'/0/1..29
+                        1 to (0 until gapLimit).toList()  // m/44'/111111'/0'/1/0..29
+                    )
 
-                for ((branch, indices) in branchesToScan) {
-                    for (addrIdx in indices) {
-                        val derivedAddr = if (branch == 0) {
-                            KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network)
-                        } else {
-                            KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network)
-                        }
+                    for ((branch, indices) in branchesToScan) {
+                        for (addrIdx in indices) {
+                            val derivedAddr = if (branch == 0) {
+                                KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network)
+                            } else {
+                                KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network)
+                            }
 
-                        if (derivedAddr.isNotBlank() && derivedAddr != account.address) {
-                            val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
-                            if (utxos.isNotEmpty()) {
-                                allDiscoveredUtxos.addAll(utxos)
-                                val totalSompi = utxos.sumOf { it.amountSompi }
-                                totalSecondarySompi += totalSompi
-                                val mass = KaspaSigner.calculateTransactionMass(utxos.size, 1)
-                                val feeSompi = KaspaSigner.calculateMinimumFeeSompi(mass)
-                                if (totalSompi > feeSompi) {
-                                    val sweepAmount = totalSompi - feeSompi
-                                    val (signedSweepTx, sweepTxId) = KaspaSigner.createAndSignTransaction(
-                                        seed = seed,
-                                        accountIndex = account.accountIndex,
-                                        inputs = utxos,
-                                        recipientAddress = account.address,
-                                        amountSompi = sweepAmount,
-                                        feeSompi = feeSompi,
-                                        changeAddress = account.address,
-                                        network = network,
-                                        inputBranch = branch,
-                                        inputAddressIndex = addrIdx
-                                    )
-                                    val (sweepOk, _) = apiClient.broadcastTransaction(signedSweepTx, network)
-                                    if (sweepOk) {
-                                        Log.i("KaspaWalletRepository", "Swept funds from $derivedAddr (branch $branch idx $addrIdx) to primary: $sweepTxId")
+                            if (derivedAddr.isNotBlank() && derivedAddr != account.address) {
+                                val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
+                                if (utxos.isNotEmpty()) {
+                                    allDiscoveredUtxos.addAll(utxos)
+                                    val totalSompi = utxos.sumOf { it.amountSompi }
+                                    totalSecondarySompi += totalSompi
+                                    val mass = KaspaSigner.calculateTransactionMass(utxos.size, 1)
+                                    val feeSompi = KaspaSigner.calculateMinimumFeeSompi(mass)
+                                    if (totalSompi > feeSompi) {
+                                        val sweepAmount = totalSompi - feeSompi
+                                        val (signedSweepTx, sweepTxId) = KaspaSigner.createAndSignTransaction(
+                                            seed = seed,
+                                            accountIndex = account.accountIndex,
+                                            inputs = utxos,
+                                            recipientAddress = account.address,
+                                            amountSompi = sweepAmount,
+                                            feeSompi = feeSompi,
+                                            changeAddress = account.address,
+                                            network = network,
+                                            inputBranch = branch,
+                                            inputAddressIndex = addrIdx
+                                        )
+                                        val (sweepOk, _) = apiClient.broadcastTransaction(signedSweepTx, network)
+                                        if (sweepOk) {
+                                            Log.i("KaspaWalletRepository", "Swept funds from $derivedAddr (branch $branch idx $addrIdx) to primary: $sweepTxId")
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } finally {
+                    seed.fill(0)
                 }
             }
         } catch (e: Exception) {
@@ -203,12 +207,119 @@ class KaspaWalletRepository(
         }
 
         // 4. Update confirmed balance and UTXO pool
-        val effectiveCalculatedBalance = maxOf(primaryBal, allDiscoveredUtxos.sumOf { it.amountSompi })
+        val distinctUtxos = allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
+        val effectiveCalculatedBalance = maxOf(primaryBal, distinctUtxos.sumOf { it.amountSompi })
         val finalBalance = maxOf(effectiveCalculatedBalance, primaryBal)
         database.accountDao().updateBalance(accountId, finalBalance)
         _accountUtxos.update { current ->
-            current + (accountId to allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" })
+            current + (accountId to distinctUtxos)
         }
+    }
+
+    suspend fun recoverChangeAddressFunds(
+        account: AccountEntity,
+        branch: Int = 1,
+        addressIndex: Int = 0
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val wallet = database.walletDao().getWalletById(account.walletId)
+            ?: return@withContext Pair(false, "Wallet not found")
+        val words = getWalletMnemonicWords(wallet)
+        if (words.isEmpty()) {
+            return@withContext Pair(false, "Cannot decrypt seed words")
+        }
+        val network = _currentNetwork.value
+        val derivedAddr = if (branch == 0) {
+            KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addressIndex, network)
+        } else {
+            KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addressIndex, network)
+        }
+
+        val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
+        if (utxos.isEmpty()) {
+            return@withContext Pair(false, "No unspent funds found on $derivedAddr")
+        }
+
+        val totalSompi = utxos.sumOf { it.amountSompi }
+        val mass = KaspaSigner.calculateTransactionMass(utxos.size, 1)
+        val feeSompi = KaspaSigner.calculateMinimumFeeSompi(mass)
+        if (totalSompi <= feeSompi) {
+            return@withContext Pair(false, "Balance (${KaspaUtils.formatSompi(totalSompi)} KAS) is too low to cover network fee (${KaspaUtils.formatSompi(feeSompi)} KAS)")
+        }
+
+        val sweepAmount = totalSompi - feeSompi
+        val seed = KaspaCrypto.mnemonicToSeed(words)
+        val (signedTx, txId) = try {
+            KaspaSigner.createAndSignTransaction(
+                seed = seed,
+                accountIndex = account.accountIndex,
+                inputs = utxos,
+                recipientAddress = account.address,
+                amountSompi = sweepAmount,
+                feeSompi = feeSompi,
+                changeAddress = account.address,
+                network = network,
+                inputBranch = branch,
+                inputAddressIndex = addressIndex
+            )
+        } finally {
+            seed.fill(0)
+        }
+
+        val (success, msg) = apiClient.broadcastTransaction(signedTx, network)
+        if (success) {
+            val finalTxId = if (msg.length == 64 && !msg.contains(" ")) msg else txId
+            val sweepTx = TransactionEntity(
+                id = finalTxId,
+                walletId = account.walletId,
+                accountId = account.id,
+                txType = TransactionType.RECEIVE,
+                amountSompi = sweepAmount,
+                feeSompi = feeSompi,
+                senderAddress = derivedAddr,
+                recipientAddress = account.address,
+                timestamp = System.currentTimeMillis(),
+                daaScore = _blockDagInfo.value.virtualDaaScore + 1,
+                status = TransactionStatus.PENDING,
+                note = "Swept change index #$addressIndex to primary"
+            )
+            saveOrMergeTransaction(sweepTx)
+            syncAccountOnChain(account.id)
+            Pair(true, "Recovered ${KaspaUtils.formatSompi(sweepAmount)} KAS! Tx: ${finalTxId.take(12)}...")
+        } else {
+            Pair(false, "Broadcast rejected: $msg")
+        }
+    }
+
+    suspend fun recoverAllChangeAddresses(account: AccountEntity): Pair<Int, Long> = withContext(Dispatchers.IO) {
+        val wallet = database.walletDao().getWalletById(account.walletId) ?: return@withContext Pair(0, 0L)
+        val words = getWalletMnemonicWords(wallet)
+        if (words.isEmpty()) return@withContext Pair(0, 0L)
+        val network = _currentNetwork.value
+        var recoveredCount = 0
+        var totalRecoveredSompi = 0L
+
+        for (branch in listOf(1, 0)) {
+            val startIdx = if (branch == 0) 1 else 0
+            for (idx in startIdx until 30) {
+                val derivedAddr = if (branch == 0) {
+                    KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, idx, network)
+                } else {
+                    KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network)
+                }
+                val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
+                if (utxos.isNotEmpty()) {
+                    val res = recoverChangeAddressFunds(account, branch, idx)
+                    if (res.first) {
+                        recoveredCount++
+                        totalRecoveredSompi += utxos.sumOf { it.amountSompi }
+                    }
+                }
+            }
+        }
+        if (recoveredCount > 0) {
+            syncAccountOnChain(account.id)
+        }
+        Pair(recoveredCount, totalRecoveredSompi)
     }
 
     suspend fun saveOrMergeTransaction(tx: TransactionEntity) = withContext(Dispatchers.IO) {
@@ -389,13 +500,17 @@ class KaspaWalletRepository(
         val words = getWalletMnemonicWords(wallet)
         if (words.isEmpty()) return@withContext account.address
         val seed = KaspaCrypto.mnemonicToSeed(words)
-        KaspaSigner.deriveKaspaAddressFromSeed(
-            seed = seed,
-            accountIndex = account.accountIndex,
-            branch = branch,
-            addressIndex = index,
-            network = _currentNetwork.value
-        )
+        try {
+            KaspaSigner.deriveKaspaAddressFromSeed(
+                seed = seed,
+                accountIndex = account.accountIndex,
+                branch = branch,
+                addressIndex = index,
+                network = _currentNetwork.value
+            )
+        } finally {
+            seed.fill(0)
+        }
     }
 
     suspend fun sendKas(
@@ -421,10 +536,18 @@ class KaspaWalletRepository(
             val availableUtxos = mutableListOf<UtxoEntry>()
             availableUtxos.addAll(livePrimary)
 
+            // Also include cached/indexed UTXOs from change addresses
+            val cachedUtxos = _accountUtxos.value[senderAccount.id] ?: emptyList()
+            for (u in cachedUtxos) {
+                if (!availableUtxos.any { it.outpointTxId == u.outpointTxId && it.outpointIndex == u.outpointIndex }) {
+                    availableUtxos.add(u)
+                }
+            }
+
             // If primary address UTXOs are insufficient, check change & secondary address indices live
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
                 for (branch in listOf(1, 0)) {
-                    for (idx in 0 until 15) {
+                    for (idx in 0 until 30) {
                         val addr = if (branch == 0) {
                             KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
                         } else {
@@ -467,16 +590,20 @@ class KaspaWalletRepository(
             }
 
             // Cryptographically sign transaction using BIP340 Schnorr and Kaspa Blake2b Sighash
-            val (signedTxJson, txId) = KaspaSigner.createAndSignTransaction(
-                seed = seed,
-                accountIndex = senderAccount.accountIndex,
-                inputs = selectedUtxos,
-                recipientAddress = recipientAddress,
-                amountSompi = amountSompi,
-                feeSompi = feeSompi,
-                changeAddress = changeAddress,
-                network = _currentNetwork.value
-            )
+            val (signedTxJson, txId) = try {
+                KaspaSigner.createAndSignTransaction(
+                    seed = seed,
+                    accountIndex = senderAccount.accountIndex,
+                    inputs = selectedUtxos,
+                    recipientAddress = recipientAddress,
+                    amountSompi = amountSompi,
+                    feeSompi = feeSompi,
+                    changeAddress = changeAddress,
+                    network = _currentNetwork.value
+                )
+            } finally {
+                seed.fill(0)
+            }
 
             // Broadcast authentic cryptographically signed transaction to Kaspa network
             val (broadcastSuccess, responseMsg) = apiClient.broadcastTransaction(signedTxJson, _currentNetwork.value)
@@ -568,9 +695,16 @@ class KaspaWalletRepository(
             val availableUtxos = mutableListOf<UtxoEntry>()
             availableUtxos.addAll(livePrimary)
 
+            val cachedUtxos = _accountUtxos.value[senderAccount.id] ?: emptyList()
+            for (u in cachedUtxos) {
+                if (!availableUtxos.any { it.outpointTxId == u.outpointTxId && it.outpointIndex == u.outpointIndex }) {
+                    availableUtxos.add(u)
+                }
+            }
+
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
                 for (branch in listOf(1, 0)) {
-                    for (idx in 0 until 15) {
+                    for (idx in 0 until 30) {
                         val addr = if (branch == 0) {
                             KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
                         } else {
@@ -601,15 +735,19 @@ class KaspaWalletRepository(
                 throw IllegalStateException("Insufficient confirmed UTXOs on Kaspa ${_currentNetwork.value.displayName}. Available: ${KaspaUtils.formatSompi(accumulated)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
             }
 
-            val (signedTxJson, txId) = KaspaSigner.createAndSignMultiOutputTransaction(
-                seed = seed,
-                accountIndex = senderAccount.accountIndex,
-                inputs = selected,
-                recipients = recipients,
-                feeSompi = feeSompi,
-                changeAddress = changeAddress,
-                network = _currentNetwork.value
-            )
+            val (signedTxJson, txId) = try {
+                KaspaSigner.createAndSignMultiOutputTransaction(
+                    seed = seed,
+                    accountIndex = senderAccount.accountIndex,
+                    inputs = selected,
+                    recipients = recipients,
+                    feeSompi = feeSompi,
+                    changeAddress = changeAddress,
+                    network = _currentNetwork.value
+                )
+            } finally {
+                seed.fill(0)
+            }
 
             val (broadcastSuccess, responseMsg) = apiClient.broadcastTransaction(signedTxJson, _currentNetwork.value)
             if (!broadcastSuccess) {
@@ -677,16 +815,20 @@ class KaspaWalletRepository(
 
         val totalAmount = totalInput - feeSompi
 
-        val (signedTxJson, txId) = KaspaSigner.createAndSignTransaction(
-            seed = seed,
-            accountIndex = account.accountIndex,
-            inputs = utxosToCompound,
-            recipientAddress = account.address,
-            amountSompi = totalAmount,
-            feeSompi = feeSompi,
-            changeAddress = account.address,
-            network = _currentNetwork.value
-        )
+        val (signedTxJson, txId) = try {
+            KaspaSigner.createAndSignTransaction(
+                seed = seed,
+                accountIndex = account.accountIndex,
+                inputs = utxosToCompound,
+                recipientAddress = account.address,
+                amountSompi = totalAmount,
+                feeSompi = feeSompi,
+                changeAddress = account.address,
+                network = _currentNetwork.value
+            )
+        } finally {
+            seed.fill(0)
+        }
 
         val (broadcastSuccess, responseMsg) = apiClient.broadcastTransaction(signedTxJson, _currentNetwork.value)
         Log.i("KaspaWalletRepository", "Compound broadcast result: $broadcastSuccess ($responseMsg)")
