@@ -7,9 +7,11 @@ import com.example.kaspawallet.data.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -18,13 +20,16 @@ import java.util.concurrent.TimeUnit
 
 class KaspaApiClient {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+        .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
         .addInterceptor { chain ->
             val request = chain.request().newBuilder()
-                .header("User-Agent", "KaspaWallet/1.0 (Android)")
+                .header("User-Agent", "KaspaWallet/1.0 (Android; QUIC/Cronet-Engine)")
                 .header("Accept", "application/json")
+                .header("Accept-Encoding", "gzip, deflate, br")
                 .build()
             chain.proceed(request)
         }
@@ -56,16 +61,12 @@ class KaspaApiClient {
         when (network) {
             KaspaNetwork.MAINNET -> {
                 candidates.add("https://api.kaspa.org")
-                candidates.add("https://katapi.kaspanet.io")
-                candidates.add("https://api-mainnet.kaspanet.org")
             }
             KaspaNetwork.TESTNET_10 -> {
                 candidates.add("https://api-tn10.kaspa.org")
-                candidates.add("https://katapi-tn10.kaspanet.io")
             }
             KaspaNetwork.TESTNET_11 -> {
                 candidates.add("https://api-tn11.kaspa.org")
-                candidates.add("https://katapi-tn11.kaspanet.io")
             }
             KaspaNetwork.DEVNET -> {
                 candidates.add("http://10.0.2.2:16210")
@@ -658,6 +659,7 @@ class KaspaApiClient {
     suspend fun broadcastTransaction(rawTxJson: String, network: KaspaNetwork): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val candidateUrls = getCandidateBaseUrls(network)
         var lastErr = "Transaction broadcast failed"
+        var hasSpecificNodeError = false
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = rawTxJson.toRequestBody(mediaType)
 
@@ -676,6 +678,7 @@ class KaspaApiClient {
                         return@withContext Pair(true, txId)
                     } else {
                         lastErr = parseBroadcastError(response.code, bodyStr)
+                        hasSpecificNodeError = true
                         Log.w("KaspaApiClient", "Node $baseUrl rejected tx ($response.code): $bodyStr")
                         // If rejected due to missing parent/orphan in mempool race, backoff briefly before trying next node
                         if (bodyStr.lowercase().contains("orphan") || bodyStr.lowercase().contains("missing")) {
@@ -684,7 +687,9 @@ class KaspaApiClient {
                     }
                 }
             } catch (e: Exception) {
-                lastErr = e.localizedMessage ?: "Network connection error to $baseUrl"
+                if (!hasSpecificNodeError) {
+                    lastErr = "Connection to node ($baseUrl): ${e.localizedMessage ?: e.javaClass.simpleName}"
+                }
                 Log.e("KaspaApiClient", "Broadcast transaction error on $baseUrl", e)
             }
         }

@@ -108,7 +108,7 @@ fun BlockDagTab(
                         icon = Icons.Default.Tag,
                         label = "Virtual DAA Score",
                         value = "#${dag.virtualDaaScore}",
-                        color = KaspaPrimaryGlow,
+                        color = KaspaPrimary,
                         modifier = Modifier.weight(1f)
                     )
                     MetricCard(
@@ -188,7 +188,7 @@ fun BlockDagTab(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         dag.tipHashes.firstOrNull() ?: "9f2a48b89c31fa7e1d5e6837ca25b6a71e8932cf0b4d1c3a62884a8b7c4d5e9f",
-                        color = KaspaPrimaryGlow,
+                        color = KaspaPrimary,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )

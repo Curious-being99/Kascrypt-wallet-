@@ -65,6 +65,7 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.okhttp)
+    implementation(libs.play.services.cronet)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

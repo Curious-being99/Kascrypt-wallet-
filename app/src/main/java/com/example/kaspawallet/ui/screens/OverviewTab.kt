@@ -72,15 +72,7 @@ fun OverviewTab(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                KaspaBackground,
-                                KaspaSurface.copy(alpha = 0.5f),
-                                KaspaBackground
-                            )
-                        )
-                    )
+                    .background(KaspaBackground)
                     .padding(vertical = 40.dp, horizontal = 20.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -139,7 +131,7 @@ fun OverviewTab(
                     ActionButton(
                         icon = Icons.Default.QrCode,
                         label = "Receive",
-                        color = KaspaPrimaryGlow,
+                        color = KaspaPrimary,
                         modifier = Modifier.weight(1f)
                     ) {
                         viewModel.setShowReceiveDialog(true)
