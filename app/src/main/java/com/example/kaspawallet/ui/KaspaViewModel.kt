@@ -122,7 +122,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                     )
                 }
                 currentActiveWalletId?.let { wId ->
-                    if (lastObservedWalletId != wId) {
+                    if (lastObservedWalletId != wId || _uiState.value.activeAccount == null || _uiState.value.accounts.isEmpty()) {
                         repository.setActiveWallet(wId)
                         observeAccountsAndTransactions(wId)
                     }
@@ -224,7 +224,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
             repository.getAccountsForWallet(walletId).collect { accountList ->
                 var selectedAccount: AccountEntity? = null
                 _uiState.update { current ->
-                    val activeAcc = if (current.activeAccount != null) {
+                    val activeAcc = if (current.activeAccount != null && current.activeAccount.walletId == walletId) {
                         accountList.find { it.id == current.activeAccount.id } ?: accountList.firstOrNull()
                     } else {
                         accountList.firstOrNull()
@@ -608,7 +608,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                             stage = ScanIndexingStage.CALCULATING_BALANCE,
                             progress = 0.84f,
                             balanceSompi = totalDiscoveredBalanceSompi,
-                            statusMessage = "Verified balance: ${KaspaUtils.formatKas(KaspaUtils.sompiToKas(totalDiscoveredBalanceSompi))} KAS"
+                            statusMessage = "Verified balance: ${KaspaUtils.formatKas(KaspaUtils.sompiToKas(totalDiscoveredBalanceSompi))}"
                         )
                     }
                 }

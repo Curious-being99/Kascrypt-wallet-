@@ -493,7 +493,7 @@ fun ScanIndexingScreen(
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "${KaspaUtils.formatKas(kasBalance)} KAS",
+                                text = KaspaUtils.formatKas(kasBalance),
                                 color = KaspaTextPrimary,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
@@ -745,7 +745,7 @@ fun ScanIndexingScreen(
                                 }
 
                                 Text(
-                                    text = "${if (isIncoming) "+" else "-"}${KaspaUtils.formatKas(txKas)} KAS",
+                                    text = "${if (isIncoming) "+" else "-"}${KaspaUtils.formatKas(txKas)}",
                                     color = if (isIncoming) KaspaSuccess else KaspaTextPrimary,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold

@@ -100,11 +100,12 @@ fun OverviewTab(
 
                     // Large Balance Display
                     Text(
-                        "${KaspaUtils.formatKas(kasBalance)} KAS",
+                        KaspaUtils.formatKas(kasBalance),
                         color = KaspaTextPrimary,
-                        fontSize = 38.sp,
+                        fontSize = 32.sp,
                         fontWeight = FontWeight.Black,
-                        letterSpacing = (-0.5).sp
+                        letterSpacing = (-0.5).sp,
+                        maxLines = 1
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))

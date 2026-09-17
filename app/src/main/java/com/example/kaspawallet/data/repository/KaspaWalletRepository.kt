@@ -216,12 +216,12 @@ class KaspaWalletRepository(
         val onChainDiscovered = maxOf(primaryBal ?: 0L, utxoSum)
         val finalBalance = if (onChainDiscovered > 0L) {
             onChainDiscovered
-        } else if (account.balanceSompi > 0L && allDiscoveredUtxos.isEmpty()) {
-            account.balanceSompi
         } else {
-            onChainDiscovered
+            account.balanceSompi
         }
-        database.accountDao().updateBalance(accountId, finalBalance)
+        if (finalBalance > 0L || onChainDiscovered > 0L) {
+            database.accountDao().updateBalance(accountId, finalBalance)
+        }
         if (distinctUtxos.isNotEmpty()) {
             _accountUtxos.update { current ->
                 current + (accountId to distinctUtxos)
