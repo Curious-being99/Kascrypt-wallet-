@@ -718,7 +718,14 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
 
                 if (activeWallet != null) {
                     val accounts = repository.database.accountDao().getAccountsForWalletSync(activeWallet.id)
-                    val activeAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
+                    val baseAcc = accounts.firstOrNull() ?: _uiState.value.activeAccount
+                    val scanBal = _scanIndexingState.value.balanceSompi
+                    val effectiveAcc = if (baseAcc != null && scanBal > baseAcc.balanceSompi) {
+                        repository.database.accountDao().updateBalance(baseAcc.id, scanBal)
+                        baseAcc.copy(balanceSompi = scanBal)
+                    } else {
+                        baseAcc
+                    }
                     
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         val walletList = if (allWallets.isNotEmpty()) allWallets else (if (_uiState.value.wallets.any { it.id == activeWallet.id }) _uiState.value.wallets else _uiState.value.wallets + activeWallet)
@@ -726,7 +733,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                             current.copy(
                                 wallets = walletList,
                                 activeWallet = activeWallet,
-                                activeAccount = activeAcc,
+                                activeAccount = effectiveAcc,
                                 selectedTab = MainTab.OVERVIEW,
                                 isWalletLocked = false,
                                 showCreateWalletDialog = false,
@@ -738,10 +745,12 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                         observeAccountsAndTransactions(activeWallet.id)
                     }
                     repository.setActiveWallet(activeWallet.id)
-                    if (activeAcc != null) {
-                        repository.setActiveAccount(activeAcc.id)
+                    if (effectiveAcc != null) {
+                        repository.setActiveAccount(effectiveAcc.id)
+                        updateAccountUtxos(effectiveAcc.id)
                     }
-                    refreshAll()
+                    repository.syncNetworkMetrics()
+                    repository.syncMarketPrice()
                 } else {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         _uiState.update { current ->

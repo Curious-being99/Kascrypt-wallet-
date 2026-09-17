@@ -213,16 +213,19 @@ class KaspaWalletRepository(
         // 4. Update confirmed balance and UTXO pool
         val distinctUtxos = allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
         val utxoSum = distinctUtxos.sumOf { it.amountSompi }
-        val finalBalance = if (primaryBal != null) {
-            maxOf(primaryBal, utxoSum)
-        } else if (distinctUtxos.isNotEmpty()) {
-            utxoSum
-        } else {
+        val onChainDiscovered = maxOf(primaryBal ?: 0L, utxoSum)
+        val finalBalance = if (onChainDiscovered > 0L) {
+            onChainDiscovered
+        } else if (account.balanceSompi > 0L && allDiscoveredUtxos.isEmpty()) {
             account.balanceSompi
+        } else {
+            onChainDiscovered
         }
         database.accountDao().updateBalance(accountId, finalBalance)
-        _accountUtxos.update { current ->
-            current + (accountId to distinctUtxos)
+        if (distinctUtxos.isNotEmpty()) {
+            _accountUtxos.update { current ->
+                current + (accountId to distinctUtxos)
+            }
         }
     }
 

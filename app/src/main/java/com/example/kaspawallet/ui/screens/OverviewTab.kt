@@ -67,7 +67,7 @@ fun OverviewTab(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(top = 0.dp, bottom = 24.dp)
     ) {
-        // Balance Cardboard (Square form, no margin)
+        // Balance Cardboard (Square form, no margin, seamless dark canvas)
         item {
             Box(
                 modifier = Modifier
@@ -75,13 +75,13 @@ fun OverviewTab(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                KaspaSurfaceElevated,
-                                KaspaSurfaceVariant.copy(alpha = 0.95f),
+                                KaspaBackground,
+                                KaspaSurface.copy(alpha = 0.5f),
                                 KaspaBackground
                             )
                         )
                     )
-                    .padding(vertical = 32.dp, horizontal = 20.dp),
+                    .padding(vertical = 40.dp, horizontal = 20.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -96,51 +96,32 @@ fun OverviewTab(
                         letterSpacing = 0.5.sp
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     // Large Balance Display
                     Text(
                         "${KaspaUtils.formatKas(kasBalance)} KAS",
                         color = KaspaTextPrimary,
-                        fontSize = 36.sp,
+                        fontSize = 38.sp,
                         fontWeight = FontWeight.Black,
                         letterSpacing = (-0.5).sp
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = KaspaPrimary.copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, KaspaPrimary.copy(alpha = 0.25f))
-                        ) {
-                            Text(
-                                "≈ $fiatValue ${state.selectedCurrency}",
-                                color = KaspaPrimaryGlow,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-
-                        Text(
-                            "$effectiveSompi Sompi",
-                            color = KaspaTextMuted,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
+                    Text(
+                        "≈ $fiatValue ${state.selectedCurrency}",
+                        color = KaspaTextSecondary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
 
-        // Quick Actions Row (Moved down, with horizontal padding)
+        // Quick Actions Row
         item {
-            Box(modifier = Modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
