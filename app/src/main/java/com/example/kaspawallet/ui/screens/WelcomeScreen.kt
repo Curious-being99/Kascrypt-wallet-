@@ -66,47 +66,6 @@ fun WelcomeScreen(
                 letterSpacing = 2.sp,
                 textAlign = TextAlign.Center
             )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Elegant Subtitle Pill Badge
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = KaspaSurfaceVariant.copy(alpha = 0.6f),
-                border = BorderStroke(1.dp, KaspaPrimary.copy(alpha = 0.25f)),
-                modifier = Modifier.padding(bottom = 12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(KaspaPrimaryGlow)
-                    )
-                    Text(
-                        text = "BlockDAG Cryptocurrency Wallet",
-                        color = KaspaPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.3.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = "The world's fastest, purest Proof-of-Work decentralized wallet with sub-second finality.",
-                color = KaspaTextSecondary,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-                lineHeight = 22.sp,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
         }
 
         // Bottom Pinned Actions Section

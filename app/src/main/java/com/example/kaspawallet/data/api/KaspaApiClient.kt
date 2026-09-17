@@ -29,7 +29,6 @@ class KaspaApiClient {
             val request = chain.request().newBuilder()
                 .header("User-Agent", "KaspaWallet/1.0 (Android; QUIC/Cronet-Engine)")
                 .header("Accept", "application/json")
-                .header("Accept-Encoding", "gzip, deflate, br")
                 .build()
             chain.proceed(request)
         }
@@ -37,6 +36,31 @@ class KaspaApiClient {
 
     @Volatile
     var customEndpoint: String? = null
+
+    private fun okhttp3.Response.readBodyString(): String {
+        val body = this.body ?: return ""
+        val encoding = this.header("Content-Encoding")?.lowercase()
+        val bytes = try {
+            body.bytes()
+        } catch (e: Exception) {
+            return ""
+        }
+        if (bytes.isEmpty()) return ""
+
+        val isGzip = encoding == "gzip" || (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())
+        if (isGzip) {
+            try {
+                java.io.ByteArrayInputStream(bytes).use { bais ->
+                    java.util.zip.GZIPInputStream(bais).use { gzis ->
+                        return gzis.bufferedReader(Charsets.UTF_8).readText()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("KaspaApiClient", "GZIP decompression note: ${e.message}")
+            }
+        }
+        return String(bytes, Charsets.UTF_8)
+    }
 
     private fun getBaseUrl(network: KaspaNetwork): String {
         val custom = customEndpoint?.trim()
@@ -97,7 +121,7 @@ class KaspaApiClient {
 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        bodyStr = response.body?.string() ?: ""
+                        bodyStr = response.readBodyString()
                         isSuccess = true
                     }
                 }
@@ -159,7 +183,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     val hr = json.optDouble("hashrate", 0.0)
                     if (hr > 1000) hr / 1000.0 else hr
@@ -188,8 +212,10 @@ class KaspaApiClient {
             val reqHealth = Request.Builder().url("$baseUrl/info/health").get().build()
             client.newCall(reqHealth).execute().use { resp ->
                 if (resp.isSuccessful) {
-                    val body = resp.body?.string() ?: ""
+                    val body = resp.readBodyString()
                     val json = JSONObject(body)
+                    synced = json.optBoolean("isSynced", true)
+
                     val serversArray = json.optJSONArray("kaspadServers")
                     if (serversArray != null && serversArray.length() > 0) {
                         var activeCount = 0
@@ -201,9 +227,10 @@ class KaspaApiClient {
                         val firstServer = serversArray.getJSONObject(0)
                         val ver = firstServer.optString("serverVersion", "")
                         if (ver.isNotEmpty()) {
-                            version = "v$ver (Rusty Kaspa)"
+                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspa)"
                         }
-                        synced = json.optJSONObject("database")?.optBoolean("isSynced", false) ?: true
+                    } else {
+                        if (peers == 0) peers = 1
                     }
                 }
             }
@@ -216,21 +243,23 @@ class KaspaApiClient {
                 val reqKaspad = Request.Builder().url("$baseUrl/info/kaspad").get().build()
                 client.newCall(reqKaspad).execute().use { resp ->
                     if (resp.isSuccessful) {
-                        val body = resp.body?.string() ?: ""
+                        val body = resp.readBodyString()
                         val json = JSONObject(body)
                         synced = json.optBoolean("isSynced", true)
-                        val ver = json.optString("serverVersion", "")
+                        val ver = json.optString("serverVersion", json.optString("version", ""))
                         if (ver.isNotEmpty()) {
-                            version = "v$ver (Rusty Kaspa)"
+                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspa)"
                         }
-                        if (peers == 0 && synced) {
-                            peers = 1
+                        if (peers == 0) {
+                            peers = json.optInt("p2pConnections", json.optInt("peersCount", 1))
                         }
                     }
                 }
             } catch (_: Exception) {
             }
         }
+
+        if (peers == 0) peers = 1
 
         return LiveNodeStatus(connectedPeers = peers, nodeVersion = version, isSynced = synced)
     }
@@ -244,7 +273,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     if (body.trim().startsWith("{")) {
                         val json = JSONObject(body)
                         json.optDouble("blockreward", json.optDouble("reward", 1.85))
@@ -270,7 +299,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     var price = json.optDouble("price", 0.0)
                     var change24h = json.optDouble("priceChangePercent24h", json.optDouble("priceChange24h", 0.0))
@@ -322,7 +351,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     val price = json.optDouble("price", 0.0)
                     if (price > 0) {
@@ -343,7 +372,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     val kaspaObj = json.optJSONObject("kaspa")
                     if (kaspaObj != null) {
@@ -376,7 +405,7 @@ class KaspaApiClient {
 
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     val quotes = json.optJSONObject("quotes")?.optJSONObject("USD")
                     if (quotes != null) {
@@ -420,7 +449,7 @@ class KaspaApiClient {
             val request = Request.Builder().url(url).get().build()
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
+                    val body = response.readBodyString()
                     val json = JSONObject(body)
                     val priorityObj = json.optJSONObject("priorityBucket")
                     val normalObj = json.optJSONArray("normalBuckets")?.optJSONObject(0)
@@ -460,7 +489,7 @@ class KaspaApiClient {
 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        val body = response.body?.string() ?: ""
+                        val body = response.readBodyString()
                         val json = JSONObject(body)
                         val balStr = json.optString("balance", "")
                         val balVal = if (balStr.isNotBlank()) balStr.toLongOrNull() ?: json.optLong("balance", 0L) else json.optLong("balance", 0L)
@@ -492,7 +521,7 @@ class KaspaApiClient {
 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        val body = response.body?.string() ?: ""
+                        val body = response.readBodyString()
                         val array = JSONArray(body)
                         for (i in 0 until array.length()) {
                             val item = array.getJSONObject(i)
@@ -558,7 +587,7 @@ class KaspaApiClient {
 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        val body = response.body?.string() ?: ""
+                        val body = response.readBodyString()
                         val array = JSONArray(body)
                         for (i in 0 until array.length()) {
                             val tx = array.getJSONObject(i)
@@ -671,7 +700,7 @@ class KaspaApiClient {
                     .build()
 
                 client.newCall(request).execute().use { response ->
-                    val bodyStr = response.body?.string() ?: ""
+                    val bodyStr = response.readBodyString()
                     if (response.isSuccessful) {
                         val json = JSONObject(bodyStr)
                         val txId = json.optString("transactionId", json.optString("transaction_id", json.optString("txId", "success")))
