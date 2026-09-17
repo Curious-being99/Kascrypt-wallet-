@@ -727,22 +727,23 @@ class KaspaApiClient {
 
     private fun parseBroadcastError(code: Int, bodyStr: String): String {
         val lower = bodyStr.lowercase()
+        val detailedMsg = try {
+            val json = JSONObject(bodyStr)
+            json.optString("message", json.optString("error", json.optString("errorMessage", "")))
+        } catch (e: Exception) {
+            bodyStr
+        }
+        val cleanDetail = if (detailedMsg.isNotBlank() && detailedMsg != bodyStr && detailedMsg.lowercase() != "error") ": ${detailedMsg.take(150)}" else ""
+
         return when {
-            lower.contains("orphan") -> "UTXO spent or missing (orphan transaction). Refreshing wallet state."
-            lower.contains("dust") -> "Transaction amount is below Kaspa dust threshold."
-            lower.contains("already spent") || lower.contains("double spend") -> "UTXO has already been spent in another transaction."
-            lower.contains("fee") || lower.contains("mass") -> "Transaction fee is insufficient for current network load."
-            lower.contains("reject") -> "Transaction rejected by Kaspa node mempool."
+            lower.contains("orphan") -> "UTXO spent or missing (orphan transaction). Refreshing wallet state$cleanDetail"
+            lower.contains("dust") -> "Transaction output is below Kaspa dust threshold (500 Sompi)$cleanDetail"
+            lower.contains("already spent") || lower.contains("double spend") -> "UTXO has already been spent in another transaction$cleanDetail"
+            lower.contains("fee") || lower.contains("mass") -> "Transaction fee/mass insufficient for network load$cleanDetail"
             code == 429 -> "Rate limit exceeded. Please wait a moment and try again."
-            code in 500..599 -> "Kaspa node server error ($code)."
+            code in 500..599 -> "Kaspa node server error ($code)$cleanDetail"
             else -> {
-                val msg = try {
-                    val json = JSONObject(bodyStr)
-                    json.optString("message", json.optString("error", bodyStr))
-                } catch (e: Exception) {
-                    bodyStr
-                }
-                if (msg.isNotBlank()) "Node Error ($code): ${msg.take(120)}" else "Node Error ($code)"
+                if (cleanDetail.isNotBlank()) "Node Rejected ($code)$cleanDetail" else "Node Error ($code): ${bodyStr.take(150)}"
             }
         }
     }

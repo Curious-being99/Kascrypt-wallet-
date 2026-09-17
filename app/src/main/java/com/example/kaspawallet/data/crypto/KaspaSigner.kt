@@ -399,7 +399,7 @@ object KaspaSigner {
         val targetScriptHex = if (targetInput.scriptPublicKey.isNotBlank()) {
             targetInput.scriptPublicKey
         } else {
-            outputs.firstOrNull()?.second ?: ""
+            outputs.lastOrNull()?.second ?: outputs.firstOrNull()?.second ?: ""
         }
         writeU16(finalHasher, 0) // version 0
         writeVarBytes(finalHasher, hexStringToByteArray(targetScriptHex))
@@ -514,8 +514,8 @@ object KaspaSigner {
         inputBranch: Int = 0,
         inputAddressIndex: Int = 0
     ): Pair<String, String> {
-        // Pre-derive all 60 signing keys (30 receive + 30 change) for flawless multi-input signing
-        val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 30, network = network)
+        // Pre-derive 200 signing keys (100 receive + 100 change) for multi-input signing
+        val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 100, network = network)
         val defaultPrivKey = derivePrivateKey(seed, accountIndex, branch = inputBranch, addressIndex = inputAddressIndex)
         try {
             val totalInputAmount = inputs.sumOf { it.amountSompi }
@@ -524,14 +524,19 @@ object KaspaSigner {
             }
             val changeAmount = totalInputAmount - amountSompi - feeSompi
 
+            val fallbackScript = addressToScriptPublicKey(changeAddress)
+            val sanitizedInputs = inputs.map { utxo ->
+                if (utxo.scriptPublicKey.isNotBlank()) utxo else utxo.copy(scriptPublicKey = fallbackScript)
+            }
+
             // Convert recipient & change addresses into Kaspa ScriptPublicKeys
             val recipientScript = addressToScriptPublicKey(recipientAddress)
             val outputsList = mutableListOf<Pair<Long, String>>()
             outputsList.add(Pair(amountSompi, recipientScript))
 
-            if (changeAmount > 0) {
-                val changeScript = addressToScriptPublicKey(changeAddress)
-                outputsList.add(Pair(changeAmount, changeScript))
+            // Kaspa dust threshold is 500 Sompi (0.00000500 KAS). Omit change output if below dust to avoid mempool rejection
+            if (changeAmount >= 500L) {
+                outputsList.add(Pair(changeAmount, fallbackScript))
             }
 
             val jsonTx = JSONObject()
@@ -539,11 +544,10 @@ object KaspaSigner {
             txInner.put("version", 0)
 
             val jsonInputs = JSONArray()
-            for (i in inputs.indices) {
-                val utxo = inputs[i]
-                val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
-                val cleanScript = effectiveScript.lowercase().trim()
-                // Find the exact private key for this UTXO from receive (0/0..29) or change (1/0..29)
+            for (i in sanitizedInputs.indices) {
+                val utxo = sanitizedInputs[i]
+                val cleanScript = utxo.scriptPublicKey.lowercase().trim()
+                // Find exact private key for this UTXO from receive (0/0..99) or change (1/0..99)
                 val privKey = accountKeyMap[cleanScript]
                     ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
                     ?: defaultPrivKey
@@ -551,7 +555,7 @@ object KaspaSigner {
                 // Compute real Kaspa consensus Blake2b sighash
                 val sighash = computeKaspaSighash(
                     txVersion = 0,
-                    inputs = inputs,
+                    inputs = sanitizedInputs,
                     outputs = outputsList,
                     inputIndex = i
                 )
