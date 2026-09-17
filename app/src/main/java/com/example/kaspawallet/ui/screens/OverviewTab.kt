@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,127 +53,149 @@ fun OverviewTab(
 ) {
     val context = LocalContext.current
     val activeAcc = state.activeAccount
-    val kasBalance = activeAcc?.let { KaspaUtils.sompiToKas(it.balanceSompi) } ?: 0.0
+    val effectiveSompi = remember(activeAcc?.balanceSompi, state.utxos) {
+        val accBal = activeAcc?.balanceSompi ?: 0L
+        val utxoBal = state.utxos.sumOf { it.amountSompi }
+        maxOf(accBal, utxoBal)
+    }
+    val kasBalance = KaspaUtils.sompiToKas(effectiveSompi)
     val fiatValue = KaspaUtils.formatCurrency(kasBalance, state.marketInfo.priceUsd, state.selectedCurrency)
 
     LazyColumn(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(top = 0.dp, bottom = 24.dp)
     ) {
-        // Balance Card
+        // Balance Cardboard (Square form, no margin)
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.Transparent)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(
-                                    KaspaSurfaceElevated,
-                                    KaspaSurfaceVariant,
-                                    KaspaSurface
-                                )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                KaspaSurfaceElevated,
+                                KaspaSurfaceVariant.copy(alpha = 0.95f),
+                                KaspaBackground
                             )
                         )
-                        .padding(20.dp)
+                    )
+                    .padding(vertical = 32.dp, horizontal = 20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Column {
-                        // Large Balance Display
-                        Text(
-                            KaspaUtils.formatKas(kasBalance),
-                            color = KaspaTextPrimary,
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp
-                        )
+                    Text(
+                        "Total Balance",
+                        color = KaspaTextSecondary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.5.sp
+                    )
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    // Large Balance Display
+                    Text(
+                        "${KaspaUtils.formatKas(kasBalance)} KAS",
+                        color = KaspaTextPrimary,
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = (-0.5).sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = KaspaPrimary.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, KaspaPrimary.copy(alpha = 0.25f))
                         ) {
                             Text(
                                 "≈ $fiatValue ${state.selectedCurrency}",
                                 color = KaspaPrimaryGlow,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                "• ${activeAcc?.balanceSompi ?: 0L} Sompi",
-                                color = KaspaTextMuted,
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                             )
                         }
+
+                        Text(
+                            "$effectiveSompi Sompi",
+                            color = KaspaTextMuted,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
             }
         }
 
-        // Quick Actions Row
+        // Quick Actions Row (Moved down, with horizontal padding)
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                ActionButton(
-                    icon = Icons.Default.ArrowOutward,
-                    label = "Send",
-                    color = KaspaPrimary,
-                    modifier = Modifier.weight(1f)
+            Box(modifier = Modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    viewModel.setShowSendDialog(true)
-                }
-
-                ActionButton(
-                    icon = Icons.Default.QrCode,
-                    label = "Receive",
-                    color = KaspaPrimaryGlow,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    viewModel.setShowReceiveDialog(true)
-                }
-
-                if (state.accounts.size > 1) {
                     ActionButton(
-                        icon = Icons.Default.SwapHoriz,
-                        label = "Transfer",
-                        color = Color(0xFF64B5F6),
+                        icon = Icons.Default.ArrowOutward,
+                        label = "Send",
+                        color = KaspaPrimary,
                         modifier = Modifier.weight(1f)
                     ) {
-                        viewModel.setShowTransferDialog(true)
+                        viewModel.setShowSendDialog(true)
                     }
-                }
 
-                ActionButton(
-                    icon = Icons.Default.Compress,
-                    label = "Compound",
-                    color = Color(0xFFFFFFFF),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    val fragmentActivity = context as? FragmentActivity
-                    if (fragmentActivity != null && BiometricAuthManager.isBiometricAvailable(context)) {
-                        BiometricAuthManager.promptBiometric(
-                            activity = fragmentActivity,
-                            title = "Authorize UTXO Consolidation",
-                            subtitle = "Scan fingerprint/face to confirm UTXO compound transaction",
-                            onSuccess = {
-                                viewModel.compoundUtxos()
-                            },
-                            onError = { err ->
-                                Toast.makeText(context, "Biometric authorization failed: $err", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                    } else {
-                        viewModel.compoundUtxos()
+                    ActionButton(
+                        icon = Icons.Default.QrCode,
+                        label = "Receive",
+                        color = KaspaPrimaryGlow,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        viewModel.setShowReceiveDialog(true)
+                    }
+
+                    if (state.accounts.size > 1) {
+                        ActionButton(
+                            icon = Icons.Default.SwapHoriz,
+                            label = "Transfer",
+                            color = Color(0xFF64B5F6),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            viewModel.setShowTransferDialog(true)
+                        }
+                    }
+
+                    ActionButton(
+                        icon = Icons.Default.Compress,
+                        label = "Compound",
+                        color = Color(0xFFFFFFFF),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        val fragmentActivity = context as? FragmentActivity
+                        if (fragmentActivity != null && BiometricAuthManager.isBiometricAvailable(context)) {
+                            BiometricAuthManager.promptBiometric(
+                                activity = fragmentActivity,
+                                title = "Authorize UTXO Consolidation",
+                                subtitle = "Scan fingerprint/face to confirm UTXO compound transaction",
+                                onSuccess = {
+                                    viewModel.compoundUtxos()
+                                },
+                                onError = { err ->
+                                    Toast.makeText(context, "Biometric authorization failed: $err", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        } else {
+                            viewModel.compoundUtxos()
+                        }
                     }
                 }
             }
@@ -180,70 +203,74 @@ fun OverviewTab(
 
         // Live Kaspa Market Banner
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = KaspaSurface)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = KaspaSurface)
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("KAS Price", color = KaspaTextSecondary, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val isPositive = state.marketInfo.change24hPercent >= 0
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("KAS Price", color = KaspaTextSecondary, fontSize = 12.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                val isPositive = state.marketInfo.change24hPercent >= 0
+                                Text(
+                                    "${if (isPositive) "+" else ""}${String.format(java.util.Locale.US, "%.2f", state.marketInfo.change24hPercent)}%",
+                                    color = if (isPositive) KaspaSuccess else KaspaError,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "${if (isPositive) "+" else ""}${String.format(java.util.Locale.US, "%.2f", state.marketInfo.change24hPercent)}%",
-                                color = if (isPositive) KaspaSuccess else KaspaError,
-                                fontSize = 11.sp,
+                                "$${String.format(java.util.Locale.US, "%.4f", state.marketInfo.priceUsd)}",
+                                color = KaspaTextPrimary,
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            "$${String.format(java.util.Locale.US, "%.4f", state.marketInfo.priceUsd)}",
-                            color = KaspaTextPrimary,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
+
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_kaspa_round_logo),
+                            contentDescription = "Kaspa Logo",
+                            modifier = Modifier.size(42.dp)
                         )
                     }
-
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_kaspa_round_logo),
-                        contentDescription = "Kaspa Logo",
-                        modifier = Modifier.size(42.dp)
-                    )
                 }
             }
         }
 
         // Recent Activity Section Header
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Recent Activity",
-                    color = KaspaTextPrimary,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                if (state.transactions.isNotEmpty()) {
-                    TextButton(onClick = { viewModel.selectTab(MainTab.TRANSACTIONS) }) {
-                        Text("View All", color = KaspaPrimary, fontSize = 13.sp)
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = null,
-                            tint = KaspaPrimary,
-                            modifier = Modifier.size(14.dp)
-                        )
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Recent Activity",
+                        color = KaspaTextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (state.transactions.isNotEmpty()) {
+                        TextButton(onClick = { viewModel.selectTab(MainTab.TRANSACTIONS) }) {
+                            Text("View All", color = KaspaPrimary, fontSize = 13.sp)
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                tint = KaspaPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -252,37 +279,41 @@ fun OverviewTab(
         // Transactions List or Empty State
         if (state.transactions.isEmpty()) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = KaspaSurfaceVariant)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = KaspaSurfaceVariant)
                     ) {
-                        Icon(
-                            Icons.Outlined.ReceiptLong,
-                            contentDescription = null,
-                            tint = KaspaTextMuted,
-                            modifier = Modifier.size(40.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("No Transactions Yet", color = KaspaTextPrimary, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Transactions made with this wallet will appear here in real-time.",
-                            color = KaspaTextSecondary,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Outlined.ReceiptLong,
+                                contentDescription = null,
+                                tint = KaspaTextMuted,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("No Transactions Yet", color = KaspaTextPrimary, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Transactions made with this wallet will appear here in real-time.",
+                                color = KaspaTextSecondary,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
             }
         } else {
             items(state.transactions.take(5)) { tx ->
-                TransactionItemRow(tx = tx)
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    TransactionItemRow(tx = tx)
+                }
             }
         }
     }

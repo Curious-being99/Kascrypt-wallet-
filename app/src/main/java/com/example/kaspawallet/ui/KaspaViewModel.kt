@@ -562,7 +562,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                     for (addr in batch) {
                         try {
                             val utxos = repository.apiClient.fetchAddressUtxos(addr, network)
-                            val bal = repository.apiClient.fetchAddressBalance(addr, network)
+                            val bal = repository.apiClient.fetchAddressBalance(addr, network) ?: 0L
                             if (utxos.isNotEmpty()) {
                                 discoveredUtxos.addAll(utxos)
                                 activeAddressesWithActivity.add(addr)

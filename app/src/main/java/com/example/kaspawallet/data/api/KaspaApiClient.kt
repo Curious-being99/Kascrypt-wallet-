@@ -56,12 +56,16 @@ class KaspaApiClient {
         when (network) {
             KaspaNetwork.MAINNET -> {
                 candidates.add("https://api.kaspa.org")
+                candidates.add("https://katapi.kaspanet.io")
+                candidates.add("https://api-mainnet.kaspanet.org")
             }
             KaspaNetwork.TESTNET_10 -> {
                 candidates.add("https://api-tn10.kaspa.org")
+                candidates.add("https://katapi-tn10.kaspanet.io")
             }
             KaspaNetwork.TESTNET_11 -> {
                 candidates.add("https://api-tn11.kaspa.org")
+                candidates.add("https://katapi-tn11.kaspanet.io")
             }
             KaspaNetwork.DEVNET -> {
                 candidates.add("http://10.0.2.2:16210")
@@ -438,7 +442,7 @@ class KaspaApiClient {
         FeeEstimate()
     }
 
-    suspend fun fetchAddressBalance(address: String, network: KaspaNetwork): Long = withContext(Dispatchers.IO) {
+    suspend fun fetchAddressBalance(address: String, network: KaspaNetwork): Long? = withContext(Dispatchers.IO) {
         val candidateUrls = getCandidateBaseUrls(network)
         for (baseUrl in candidateUrls) {
             try {
@@ -457,14 +461,16 @@ class KaspaApiClient {
                     if (response.isSuccessful) {
                         val body = response.body?.string() ?: ""
                         val json = JSONObject(body)
-                        return@withContext json.optLong("balance", 0L)
+                        val balStr = json.optString("balance", "")
+                        val balVal = if (balStr.isNotBlank()) balStr.toLongOrNull() ?: json.optLong("balance", 0L) else json.optLong("balance", 0L)
+                        return@withContext balVal
                     }
                 }
             } catch (e: Exception) {
                 Log.d("KaspaApiClient", "Address balance check candidate $baseUrl unfulfilled for $address: ${e.message}")
             }
         }
-        0L
+        null
     }
 
     suspend fun fetchAddressUtxos(address: String, network: KaspaNetwork): List<UtxoEntry> = withContext(Dispatchers.IO) {

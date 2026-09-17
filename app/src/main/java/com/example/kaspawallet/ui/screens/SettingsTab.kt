@@ -335,20 +335,6 @@ fun SettingsTab(
                         }
                     }
 
-                    // Rescan On-Chain
-                    Button(
-                        onClick = {
-                            viewModel.triggerRescanActiveWallet(context)
-                        },
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = KaspaSurfaceVariant, contentColor = KaspaPrimaryGlow)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, tint = KaspaPrimary, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Rescan On-Chain (30 Gap Limit)", fontWeight = FontWeight.SemiBold)
-                    }
-
                     // View Seed Phrase
                     Button(
                         onClick = {

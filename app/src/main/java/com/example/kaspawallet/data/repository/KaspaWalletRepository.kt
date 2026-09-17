@@ -113,17 +113,18 @@ class KaspaWalletRepository(
     suspend fun syncAccountOnChain(accountId: String) = withContext(Dispatchers.IO) {
         val account = database.accountDao().getAccountById(accountId) ?: return@withContext
         val network = _currentNetwork.value
+        val primaryAddress = KaspaUtils.formatAddressForNetwork(account.address, network)
         val allDiscoveredUtxos = mutableListOf<UtxoEntry>()
 
         // 1. Fetch live UTXOs & real balance from primary address
-        val primaryUtxos = apiClient.fetchAddressUtxos(account.address, network)
+        val primaryUtxos = apiClient.fetchAddressUtxos(primaryAddress, network)
         allDiscoveredUtxos.addAll(primaryUtxos)
-        val primaryBal = apiClient.fetchAddressBalance(account.address, network)
+        val primaryBal = apiClient.fetchAddressBalance(primaryAddress, network)
 
         // Derive known account addresses to correctly categorize SEND vs RECEIVE transactions
         val wallet = database.walletDao().getWalletById(account.walletId)
         val words = getWalletMnemonicWords(wallet)
-        val knownAddresses = mutableSetOf(account.address)
+        val knownAddresses = mutableSetOf(account.address, primaryAddress)
         if (words.isNotEmpty()) {
             for (branch in 0..1) {
                 for (idx in 0 until 30) {
@@ -132,13 +133,16 @@ class KaspaWalletRepository(
                     } else {
                         KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network)
                     }
-                    if (addr.isNotBlank()) knownAddresses.add(addr)
+                    if (addr.isNotBlank()) {
+                        knownAddresses.add(addr)
+                        knownAddresses.add(KaspaUtils.formatAddressForNetwork(addr, network))
+                    }
                 }
             }
         }
 
         // 2. Fetch real Transactions for primary address
-        val liveTxs = apiClient.fetchAddressTransactions(account.address, account.walletId, accountId, network, knownAddresses)
+        val liveTxs = apiClient.fetchAddressTransactions(primaryAddress, account.walletId, accountId, network, knownAddresses)
         if (liveTxs.isNotEmpty()) {
             for (tx in liveTxs) {
                 saveOrMergeTransaction(tx)
@@ -167,7 +171,7 @@ class KaspaWalletRepository(
                                 KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network)
                             }
 
-                            if (derivedAddr.isNotBlank() && derivedAddr != account.address) {
+                            if (derivedAddr.isNotBlank() && derivedAddr != account.address && derivedAddr != primaryAddress) {
                                 val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
                                 if (utxos.isNotEmpty()) {
                                     allDiscoveredUtxos.addAll(utxos)
@@ -208,8 +212,14 @@ class KaspaWalletRepository(
 
         // 4. Update confirmed balance and UTXO pool
         val distinctUtxos = allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
-        val effectiveCalculatedBalance = maxOf(primaryBal, distinctUtxos.sumOf { it.amountSompi })
-        val finalBalance = maxOf(effectiveCalculatedBalance, primaryBal)
+        val utxoSum = distinctUtxos.sumOf { it.amountSompi }
+        val finalBalance = if (primaryBal != null) {
+            maxOf(primaryBal, utxoSum)
+        } else if (distinctUtxos.isNotEmpty()) {
+            utxoSum
+        } else {
+            account.balanceSompi
+        }
         database.accountDao().updateBalance(accountId, finalBalance)
         _accountUtxos.update { current ->
             current + (accountId to distinctUtxos)
@@ -413,7 +423,7 @@ class KaspaWalletRepository(
         )
         
         // Fetch real on-chain balance (0 Sompi for fresh or real balance if imported)
-        val realOnChainBalance = apiClient.fetchAddressBalance(address, _currentNetwork.value)
+        val realOnChainBalance = apiClient.fetchAddressBalance(address, _currentNetwork.value) ?: 0L
 
         val primaryAccount = AccountEntity(
             id = accountId,
@@ -457,7 +467,7 @@ class KaspaWalletRepository(
         val address = KaspaUtils.generateDeterministicAddress(words, accountIndex, _currentNetwork.value)
         val accountId = UUID.randomUUID().toString()
 
-        val realOnChainBalance = apiClient.fetchAddressBalance(address, _currentNetwork.value)
+        val realOnChainBalance = apiClient.fetchAddressBalance(address, _currentNetwork.value) ?: 0L
 
         val newAccount = AccountEntity(
             id = accountId,

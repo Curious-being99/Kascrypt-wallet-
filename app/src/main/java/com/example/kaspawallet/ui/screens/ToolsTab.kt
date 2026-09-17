@@ -277,7 +277,7 @@ fun ToolsTab(
                                         if (KaspaUtils.isValidKaspaAddress(checkAddressInput)) {
                                             isCheckingAddress = true
                                             coroutineScope.launch {
-                                                val sompi = apiClient.fetchAddressBalance(checkAddressInput, state.network)
+                                                val sompi = apiClient.fetchAddressBalance(checkAddressInput, state.network) ?: 0L
                                                 val kas = KaspaUtils.sompiToKas(sompi)
                                                 checkedBalanceResult = "Valid Kaspa Address on ${state.network.displayName}\nPrefix: ${state.network.prefix}\nOn-chain Balance: ${KaspaUtils.formatKas(kas)} ($sompi Sompi)"
                                                 isCheckingAddress = false
