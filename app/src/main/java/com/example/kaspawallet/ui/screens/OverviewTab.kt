@@ -395,12 +395,21 @@ fun TransactionItemRow(tx: com.example.kaspawallet.data.model.TransactionEntity)
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Text(
-                    "DAA #${tx.daaScore}",
-                    color = KaspaTextMuted,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+                if (tx.status == com.example.kaspawallet.data.model.TransactionStatus.PENDING) {
+                    Text(
+                        "Confirming...",
+                        color = Color(0xFFFFA726),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Text(
+                        "DAA #${tx.daaScore}",
+                        color = KaspaTextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }

@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.kaspawallet.data.crypto.KaspaUtils
 import com.example.kaspawallet.data.model.TransactionEntity
+import com.example.kaspawallet.data.model.TransactionStatus
 import com.example.kaspawallet.data.model.TransactionType
 import com.example.kaspawallet.ui.WalletUiState
 import com.example.kaspawallet.ui.theme.*
@@ -220,7 +221,27 @@ fun TransactionsTab(state: WalletUiState) {
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(title, color = KaspaTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                        Text(dateStr, color = KaspaTextMuted, fontSize = 10.sp)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(dateStr, color = KaspaTextMuted, fontSize = 10.sp)
+                                            val currentDaa = state.blockDagInfo.virtualDaaScore
+                                            val confirmations = if (currentDaa > 0 && tx.daaScore > 0) maxOf(0L, currentDaa - tx.daaScore) else 0L
+                                            if (tx.status == TransactionStatus.PENDING) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    "• Confirming ($confirmations/10 DAA)",
+                                                    color = Color(0xFFFFA726),
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            } else if (confirmations > 0) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    "• $confirmations confs",
+                                                    color = KaspaPrimary,
+                                                    fontSize = 10.sp
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -271,8 +292,11 @@ fun TransactionsTab(state: WalletUiState) {
                     DetailRow("Fee", KaspaUtils.formatSompi(tx.feeSompi))
                     DetailRow("Sender", KaspaUtils.truncateAddress(tx.senderAddress, 10, 8))
                     DetailRow("Recipient", KaspaUtils.truncateAddress(tx.recipientAddress, 10, 8))
+                    val currentDaa = state.blockDagInfo.virtualDaaScore
+                    val confirmations = if (currentDaa > 0 && tx.daaScore > 0) maxOf(0L, currentDaa - tx.daaScore) else 0L
                     DetailRow("Virtual DAA Score", "#${tx.daaScore}")
-                    DetailRow("Status", tx.status.name)
+                    DetailRow("Confirmations", "$confirmations DAA blocks")
+                    DetailRow("Status", if (tx.status == TransactionStatus.PENDING) "Pending ($confirmations/10 DAA)" else "Confirmed & Finalized")
                     if (tx.note.isNotEmpty()) {
                         DetailRow("Note", tx.note)
                     }

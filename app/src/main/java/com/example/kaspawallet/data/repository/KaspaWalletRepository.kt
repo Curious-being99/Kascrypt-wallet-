@@ -17,7 +17,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class KaspaWalletRepository(
     val database: KaspaDatabase,
@@ -45,6 +47,15 @@ class KaspaWalletRepository(
     // UTXOs state mapped by accountId
     private val _accountUtxos = MutableStateFlow<Map<String, List<UtxoEntry>>>(emptyMap())
     val accountUtxos: StateFlow<Map<String, List<UtxoEntry>>> = _accountUtxos.asStateFlow()
+
+    // Outpoints currently spent in recently broadcasted transactions (key: "txId:index", value: timestamp)
+    private val pendingSpentOutpoints = ConcurrentHashMap<String, Long>()
+
+    // Pending change UTXOs mapped by accountId -> list of UtxoEntry
+    private val pendingChangeUtxos = ConcurrentHashMap<String, MutableList<UtxoEntry>>()
+
+    @Volatile
+    private var activeWebSocket: okhttp3.WebSocket? = null
 
     private val repositoryScope = CoroutineScope(Dispatchers.IO)
 
@@ -84,6 +95,14 @@ class KaspaWalletRepository(
     }
 
     private fun startPeriodicSync() {
+        // Real-time WebSocket connection to stream address UTXO/Tx events
+        repositoryScope.launch {
+            combine(_currentNetwork, _activeAccountId) { net, accId -> Pair(net, accId) }
+                .collectLatest { (network, accId) ->
+                    restartWebSocket(network, accId)
+                }
+        }
+
         repositoryScope.launch {
             while (isActive) {
                 try {
@@ -98,9 +117,52 @@ class KaspaWalletRepository(
                 } catch (e: Exception) {
                     Log.w("KaspaWalletRepository", "Periodic sync warning: ${e.message}")
                 }
-                delay(12000) // Poll real network every 12 seconds
+                delay(4000) // Responsive 4-second polling for quick on-chain updates
             }
         }
+    }
+
+    private fun restartWebSocket(network: KaspaNetwork, accId: String?) {
+        try {
+            activeWebSocket?.close(1000, "Switching account/network")
+            activeWebSocket = null
+        } catch (e: Exception) {
+            Log.d("KaspaWalletRepository", "WS close note: ${e.message}")
+        }
+
+        if (accId == null) return
+
+        val account = database.accountDao().getAccountById(accId) ?: return
+        val address = KaspaUtils.formatAddressForNetwork(account.address, network)
+
+        val listener = object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                Log.i("KaspaWalletRepository", "WebSocket connected to $network for $address")
+                try {
+                    val subMsg = JSONObject().apply {
+                        put("type", "subscribe")
+                        put("topic", "utxos-changed")
+                        put("address", address)
+                    }
+                    webSocket.send(subMsg.toString())
+                } catch (e: Exception) {
+                    Log.d("KaspaWalletRepository", "WS subscribe error: ${e.message}")
+                }
+            }
+
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                Log.d("KaspaWalletRepository", "WS event received for $address: $text")
+                repositoryScope.launch {
+                    syncAccountOnChain(accId)
+                }
+            }
+
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                Log.d("KaspaWalletRepository", "WS disconnected/failed: ${t.message}")
+            }
+        }
+
+        activeWebSocket = apiClient.openWebSocket(network, listener)
     }
 
     suspend fun syncNetworkMetrics() {
@@ -230,10 +292,40 @@ class KaspaWalletRepository(
         }
 
         // 4. Update confirmed balance and UTXO pool
-        val distinctUtxos = allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
+        // Prune pending spent outpoints older than 20 seconds (fast, adaptive release)
+        val now = System.currentTimeMillis()
+        val expiredThreshold = now - 20_000L
+        pendingSpentOutpoints.entries.removeIf { it.value < expiredThreshold }
+
+        // If any pending change outputs for this account have arrived in allDiscoveredUtxos, remove them from pendingChangeUtxos
+        val accountChangeList = pendingChangeUtxos[accountId]
+        if (accountChangeList != null) {
+            synchronized(accountChangeList) {
+                accountChangeList.removeAll { change ->
+                    allDiscoveredUtxos.any { it.outpointTxId == change.outpointTxId && it.outpointIndex == change.outpointIndex }
+                }
+            }
+        }
+
+        // Filter out UTXOs that are in pendingSpentOutpoints (prevents lagging API from resurrecting spent UTXOs)
+        val unspentUtxos = allDiscoveredUtxos.filterNot {
+            pendingSpentOutpoints.containsKey("${it.outpointTxId}:${it.outpointIndex}")
+        }.toMutableList()
+
+        // Include any pending change UTXOs that haven't arrived yet from the indexer
+        val remainingPendingChange = pendingChangeUtxos[accountId]?.toList() ?: emptyList()
+        for (change in remainingPendingChange) {
+            if (!unspentUtxos.any { it.outpointTxId == change.outpointTxId && it.outpointIndex == change.outpointIndex }) {
+                unspentUtxos.add(change)
+            }
+        }
+
+        val distinctUtxos = unspentUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
         val utxoSum = distinctUtxos.sumOf { it.amountSompi }
-        val onChainDiscovered = maxOf(primaryBal ?: 0L, utxoSum)
-        val finalBalance = onChainDiscovered
+
+        // If there are active pending local operations (spents or change), prioritize utxoSum to prevent stale API balance from overwriting deducted balance
+        val hasPendingLocalOps = pendingSpentOutpoints.isNotEmpty() || (pendingChangeUtxos[accountId]?.isNotEmpty() == true)
+        val finalBalance = if (hasPendingLocalOps) utxoSum else maxOf(primaryBal ?: 0L, utxoSum)
 
         database.accountDao().updateBalance(accountId, finalBalance)
 
@@ -364,6 +456,46 @@ class KaspaWalletRepository(
             database.transactionDao().insertTransaction(mergedTx)
         } else {
             database.transactionDao().insertTransaction(tx)
+        }
+    }
+
+    fun trackTransactionConfirmationRealtime(txId: String, accountId: String, spentOutpoints: List<String>) {
+        repositoryScope.launch {
+            var attempts = 0
+            var confirmed = false
+            while (attempts < 15 && !confirmed) {
+                delay(1000)
+                attempts++
+                try {
+                    val network = _currentNetwork.value
+                    val txInfo = apiClient.fetchTransaction(txId, network)
+                    val isAccepted = txInfo != null && (txInfo.optBoolean("is_accepted", false) || txInfo.has("block_time") || txInfo.has("transaction_id"))
+                    if (isAccepted) {
+                        confirmed = true
+                        Log.i("KaspaWalletRepository", "Tx $txId confirmed on-chain in $attempts seconds! Releasing pending outpoints.")
+                        for (op in spentOutpoints) {
+                            pendingSpentOutpoints.remove(op)
+                        }
+                        val existing = database.transactionDao().getTransactionById(txId)
+                        if (existing != null) {
+                            val blockDaa = txInfo?.optLong("block_daa_score", existing.daaScore) ?: existing.daaScore
+                            database.transactionDao().insertTransaction(existing.copy(status = TransactionStatus.CONFIRMED, daaScore = blockDaa))
+                        }
+                        syncAccountOnChain(accountId)
+                        break
+                    }
+                } catch (e: Exception) {
+                    // Continue checking
+                }
+            }
+
+            // If 15 seconds elapsed and not confirmed, release outpoints to avoid locking user funds
+            if (!confirmed) {
+                for (op in spentOutpoints) {
+                    pendingSpentOutpoints.remove(op)
+                }
+                syncAccountOnChain(accountId)
+            }
         }
     }
 
@@ -658,16 +790,45 @@ class KaspaWalletRepository(
             }
 
             val finalTxId = if (responseMsg.length == 64 && !responseMsg.contains(" ")) responseMsg else txId
+            val currentDaa = _blockDagInfo.value.virtualDaaScore + 1
+
+            // Record spent outpoints to prevent lagging REST API indexer from resurrecting them
+            val now = System.currentTimeMillis()
+            for (u in selectedUtxos) {
+                pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+            }
+
+            val totalInputSompi = selectedUtxos.sumOf { it.amountSompi }
+            val changeSompi = totalInputSompi - totalDebit
+            val changeScript = KaspaSigner.addressToScriptPublicKey(changeAddress)
+
+            val optimisticChangeList = mutableListOf<UtxoEntry>()
+            if (changeSompi >= 500L) {
+                val changeUtxo = UtxoEntry(
+                    outpointTxId = finalTxId,
+                    outpointIndex = 1,
+                    amountSompi = changeSompi,
+                    scriptPublicKey = changeScript,
+                    blockDaaScore = currentDaa,
+                    isCoinbase = false
+                )
+                optimisticChangeList.add(changeUtxo)
+                val existing = pendingChangeUtxos.getOrPut(senderAccount.id) { mutableListOf() }
+                synchronized(existing) {
+                    existing.removeAll { it.outpointTxId == finalTxId }
+                    existing.add(changeUtxo)
+                }
+            }
 
             val newSenderBalance = maxOf(0L, senderAccount.balanceSompi - totalDebit)
             database.accountDao().updateBalance(senderAccount.id, newSenderBalance)
 
-            val currentDaa = _blockDagInfo.value.virtualDaaScore + 1
-
-            // Remove spent UTXOs from local cache and trigger background sync once broadcasted
-            val updatedUtxos = availableUtxos.filterNot { selectedUtxos.contains(it) }
+            // Remove spent UTXOs from local cache and include optimistic change immediately
+            val remaining = availableUtxos.filterNot { selectedUtxos.contains(it) }.toMutableList()
+            remaining.addAll(optimisticChangeList)
+            val distinctRemaining = remaining.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
             _accountUtxos.update { current ->
-                current + (senderAccount.id to updatedUtxos)
+                current + (senderAccount.id to distinctRemaining)
             }
 
             repositoryScope.launch {
@@ -691,11 +852,12 @@ class KaspaWalletRepository(
             )
             database.transactionDao().insertTransaction(tx)
 
-            // Re-sync on-chain balance after broadcast
-            repositoryScope.launch {
-                delay(3000)
-                syncAccountOnChain(senderAccount.id)
-            }
+            // Actively track on-chain blockDAG confirmation in real-time
+            trackTransactionConfirmationRealtime(
+                txId = finalTxId,
+                accountId = senderAccount.id,
+                spentOutpoints = selectedUtxos.map { "${it.outpointTxId}:${it.outpointIndex}" }
+            )
 
             tx
         }
@@ -803,6 +965,34 @@ class KaspaWalletRepository(
             }
 
             val finalTxId = if (responseMsg.length == 64 && !responseMsg.contains(" ")) responseMsg else txId
+
+            val now = System.currentTimeMillis()
+            for (u in selected) {
+                pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+            }
+
+            val totalInputSompi = selected.sumOf { it.amountSompi }
+            val changeSompi = totalInputSompi - totalDebit
+            val changeScript = KaspaSigner.addressToScriptPublicKey(changeAddress)
+
+            val optimisticChangeList = mutableListOf<UtxoEntry>()
+            if (changeSompi >= 500L) {
+                val changeUtxo = UtxoEntry(
+                    outpointTxId = finalTxId,
+                    outpointIndex = recipients.size,
+                    amountSompi = changeSompi,
+                    scriptPublicKey = changeScript,
+                    blockDaaScore = _blockDagInfo.value.virtualDaaScore + 1,
+                    isCoinbase = false
+                )
+                optimisticChangeList.add(changeUtxo)
+                val existing = pendingChangeUtxos.getOrPut(senderAccount.id) { mutableListOf() }
+                synchronized(existing) {
+                    existing.removeAll { it.outpointTxId == finalTxId }
+                    existing.add(changeUtxo)
+                }
+            }
+
             val newSenderBalance = maxOf(0L, senderAccount.balanceSompi - totalDebit)
             database.accountDao().updateBalance(senderAccount.id, newSenderBalance)
 
@@ -822,14 +1012,17 @@ class KaspaWalletRepository(
             )
             saveOrMergeTransaction(tx)
 
-            val updatedUtxos = availableUtxos.filterNot { selected.contains(it) }
+            val updatedUtxos = availableUtxos.filterNot { selected.contains(it) }.toMutableList()
+            updatedUtxos.addAll(optimisticChangeList)
+            val distinctUpdated = updatedUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
             _accountUtxos.update { current ->
-                current + (senderAccount.id to updatedUtxos)
+                current + (senderAccount.id to distinctUpdated)
             }
-            repositoryScope.launch {
-                delay(1500)
-                syncAccountOnChain(senderAccount.id)
-            }
+            trackTransactionConfirmationRealtime(
+                txId = finalTxId,
+                accountId = senderAccount.id,
+                spentOutpoints = selected.map { "${it.outpointTxId}:${it.outpointIndex}" }
+            )
             tx
         }
     }
@@ -887,6 +1080,25 @@ class KaspaWalletRepository(
         val finalTxId = if (responseMsg.length == 64 && !responseMsg.contains(" ")) responseMsg else txId
         val currentDaa = _blockDagInfo.value.virtualDaaScore + 1
 
+        val now = System.currentTimeMillis()
+        for (u in utxosToCompound) {
+            pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+        }
+
+        val compoundUtxo = UtxoEntry(
+            outpointTxId = finalTxId,
+            outpointIndex = 0,
+            amountSompi = totalAmount,
+            scriptPublicKey = KaspaSigner.addressToScriptPublicKey(account.address),
+            blockDaaScore = currentDaa,
+            isCoinbase = false
+        )
+        val existing = pendingChangeUtxos.getOrPut(account.id) { mutableListOf() }
+        synchronized(existing) {
+            existing.removeAll { it.outpointTxId == finalTxId }
+            existing.add(compoundUtxo)
+        }
+
         database.accountDao().updateBalance(account.id, totalAmount)
 
         val tx = TransactionEntity(
@@ -905,10 +1117,15 @@ class KaspaWalletRepository(
         )
         database.transactionDao().insertTransaction(tx)
 
-        repositoryScope.launch {
-            kotlinx.coroutines.delay(1500)
-            syncAccountOnChain(account.id)
+        _accountUtxos.update { current ->
+            current + (account.id to listOf(compoundUtxo))
         }
+
+        trackTransactionConfirmationRealtime(
+            txId = finalTxId,
+            accountId = account.id,
+            spentOutpoints = utxosToCompound.map { "${it.outpointTxId}:${it.outpointIndex}" }
+        )
 
         tx
     }

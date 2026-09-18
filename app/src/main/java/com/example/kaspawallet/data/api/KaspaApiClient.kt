@@ -747,4 +747,40 @@ class KaspaApiClient {
             }
         }
     }
+
+    fun openWebSocket(network: KaspaNetwork, listener: okhttp3.WebSocketListener): okhttp3.WebSocket? {
+        val baseUrl = getBaseUrl(network)
+        val wsUrl = if (baseUrl.startsWith("https://")) {
+            baseUrl.replaceFirst("https://", "wss://") + "/ws"
+        } else {
+            baseUrl.replaceFirst("http://", "ws://") + "/ws"
+        }
+        return try {
+            val req = Request.Builder().url(wsUrl).build()
+            client.newWebSocket(req, listener)
+        } catch (e: Exception) {
+            Log.w("KaspaApiClient", "WebSocket connect error to $wsUrl: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun fetchTransaction(txId: String, network: KaspaNetwork): JSONObject? = withContext(Dispatchers.IO) {
+        val candidateUrls = getCandidateBaseUrls(network)
+        for (baseUrl in candidateUrls) {
+            try {
+                val req = Request.Builder().url("$baseUrl/transactions/$txId").build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.readBodyString()
+                        if (body.isNotBlank() && body != "null") {
+                            return@withContext JSONObject(body)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Continue to next candidate
+            }
+        }
+        null
+    }
 }
