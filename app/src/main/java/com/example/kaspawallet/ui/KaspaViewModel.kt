@@ -318,7 +318,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 if (network != _uiState.value.network) {
                     repository.setNetwork(network)
                 }
-                val (wallet, account) = repository.createWallet(name, words, hasPassphrase)
+                val (wallet, account) = repository.createWallet(name, words, hasPassphrase, passphrase, password)
                 saveWalletPassword(context, wallet.id, password)
                 _uiState.update { current ->
                     val updatedWallets = if (current.wallets.any { it.id == wallet.id }) current.wallets else current.wallets + wallet
@@ -664,7 +664,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                 } catch (_: Exception) {}
 
                 val syncedAccount = repository.database.accountDao().getAccountById(initialAccount.id) ?: initialAccount
-                val finalBalance = syncedAccount.balanceSompi.coerceAtLeast(totalDiscoveredBalanceSompi)
+                val finalBalance = totalDiscoveredBalanceSompi
 
                 // Stage 6: Complete
                 kotlinx.coroutines.delay(200)

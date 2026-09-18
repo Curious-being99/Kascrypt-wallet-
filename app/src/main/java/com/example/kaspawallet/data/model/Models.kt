@@ -24,6 +24,7 @@ data class WalletEntity(
     val encryptedMnemonic: String,
     val wordCount: Int = 12,
     val hasPassphrase: Boolean = false,
+    val encryptedPassphrase: String = "",
     val isLocked: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )

@@ -61,6 +61,23 @@ class KaspaWalletRepository(
         return KaspaCrypto.decryptMnemonic(stored, pwd)
     }
 
+    fun getWalletPassphrase(wallet: WalletEntity?, explicitPassword: String? = null): String {
+        if (wallet == null || !wallet.hasPassphrase || wallet.encryptedPassphrase.isBlank()) return ""
+        val pwd = explicitPassword ?: activeSessionPassword
+        return try {
+            KaspaCrypto.decryptKeystore(wallet.encryptedPassphrase, pwd)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    fun getWalletSeed(wallet: WalletEntity?, explicitPassword: String? = null): ByteArray {
+        val words = getWalletMnemonicWords(wallet, explicitPassword)
+        if (words.isEmpty()) return ByteArray(64)
+        val passphrase = getWalletPassphrase(wallet, explicitPassword)
+        return KaspaCrypto.mnemonicToSeed(words, passphrase)
+    }
+
     init {
         // Start background live sync for BlockDAG metrics and Market Price
         startPeriodicSync()
@@ -124,14 +141,15 @@ class KaspaWalletRepository(
         // Derive known account addresses to correctly categorize SEND vs RECEIVE transactions
         val wallet = database.walletDao().getWalletById(account.walletId)
         val words = getWalletMnemonicWords(wallet)
+        val passphrase = getWalletPassphrase(wallet)
         val knownAddresses = mutableSetOf(account.address, primaryAddress)
         if (words.isNotEmpty()) {
             for (branch in 0..1) {
                 for (idx in 0 until 30) {
                     val addr = if (branch == 0) {
-                        KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, idx, network)
+                        KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, idx, network, passphrase)
                     } else {
-                        KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network)
+                        KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network, passphrase)
                     }
                     if (addr.isNotBlank()) {
                         knownAddresses.add(addr)
@@ -154,8 +172,9 @@ class KaspaWalletRepository(
         try {
             val wallet = database.walletDao().getWalletById(account.walletId)
             val words = getWalletMnemonicWords(wallet)
+            val passphrase = getWalletPassphrase(wallet)
             if (words.isNotEmpty()) {
-                val seed = KaspaCrypto.mnemonicToSeed(words)
+                val seed = getWalletSeed(wallet)
                 try {
                     val gapLimit = 30
                     val branchesToScan = listOf(
@@ -166,9 +185,9 @@ class KaspaWalletRepository(
                     for ((branch, indices) in branchesToScan) {
                         for (addrIdx in indices) {
                             val derivedAddr = if (branch == 0) {
-                                KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network)
+                                KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network, passphrase)
                             } else {
-                                KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network)
+                                KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network, passphrase)
                             }
 
                             if (derivedAddr.isNotBlank() && derivedAddr != account.address && derivedAddr != primaryAddress) {
@@ -214,18 +233,12 @@ class KaspaWalletRepository(
         val distinctUtxos = allDiscoveredUtxos.distinctBy { "${it.outpointTxId}:${it.outpointIndex}" }
         val utxoSum = distinctUtxos.sumOf { it.amountSompi }
         val onChainDiscovered = maxOf(primaryBal ?: 0L, utxoSum)
-        val finalBalance = if (onChainDiscovered > 0L) {
-            onChainDiscovered
-        } else {
-            account.balanceSompi
-        }
-        if (finalBalance > 0L || onChainDiscovered > 0L) {
-            database.accountDao().updateBalance(accountId, finalBalance)
-        }
-        if (distinctUtxos.isNotEmpty()) {
-            _accountUtxos.update { current ->
-                current + (accountId to distinctUtxos)
-            }
+        val finalBalance = onChainDiscovered
+
+        database.accountDao().updateBalance(accountId, finalBalance)
+
+        _accountUtxos.update { current ->
+            current + (accountId to distinctUtxos)
         }
     }
 
@@ -260,7 +273,7 @@ class KaspaWalletRepository(
         }
 
         val sweepAmount = totalSompi - feeSompi
-        val seed = KaspaCrypto.mnemonicToSeed(words)
+        val seed = getWalletSeed(wallet)
         val (signedTx, txId) = try {
             KaspaSigner.createAndSignTransaction(
                 seed = seed,
@@ -412,6 +425,7 @@ class KaspaWalletRepository(
             encryptedMnemonic = KaspaCrypto.encryptMnemonic(mnemonicWords, password),
             wordCount = mnemonicWords.size,
             hasPassphrase = hasPassphrase,
+            encryptedPassphrase = if (hasPassphrase && passphrase.isNotBlank()) KaspaCrypto.encryptKeystore(passphrase, password) else "",
             isLocked = false
         )
         database.walletDao().insertWallet(wallet)
@@ -512,7 +526,7 @@ class KaspaWalletRepository(
         val wallet = database.walletDao().getWalletById(account.walletId) ?: return@withContext account.address
         val words = getWalletMnemonicWords(wallet)
         if (words.isEmpty()) return@withContext account.address
-        val seed = KaspaCrypto.mnemonicToSeed(words)
+        val seed = getWalletSeed(wallet)
         try {
             KaspaSigner.deriveKaspaAddressFromSeed(
                 seed = seed,
@@ -539,7 +553,7 @@ class KaspaWalletRepository(
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
             val words = getWalletMnemonicWords(wallet)
-            val seed = if (words.isNotEmpty()) KaspaCrypto.mnemonicToSeed(words) else ByteArray(64)
+            val seed = getWalletSeed(wallet)
 
             // Change output returns directly to the sender's account address
             val changeAddress = senderAccount.address
@@ -701,7 +715,7 @@ class KaspaWalletRepository(
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
             val words = getWalletMnemonicWords(wallet)
-            val seed = if (words.isNotEmpty()) KaspaCrypto.mnemonicToSeed(words) else ByteArray(64)
+            val seed = getWalletSeed(wallet)
 
             val changeAddress = senderAccount.address
             val livePrimary = apiClient.fetchAddressUtxos(senderAccount.address, _currentNetwork.value)
@@ -814,7 +828,7 @@ class KaspaWalletRepository(
         if (words.size < 12) {
             throw IllegalStateException("Invalid wallet seed words")
         }
-        val seed = KaspaCrypto.mnemonicToSeed(words)
+        val seed = getWalletSeed(wallet)
         // Cap compounding inputs to 80 to guarantee transaction mass stays below standard node mempool limits
         val utxosToCompound = liveUtxos.take(80)
 
