@@ -97,6 +97,13 @@ class KaspaConsensusTest {
     }
 
     @Test
+    fun testAddressDecodeScript() {
+        val addr = "kaspa:qrnlwd550r4ah7kmhr5q9tmvha8wrmjuus7qczmd8hc3thd3h9srwdca3xtkq"
+        val script = com.example.kaspawallet.data.crypto.KaspaCrypto.decodeAddressToScriptPublicKey(addr)
+        assertEquals("20e7f7369478ebdbfadbb8e802af6cbf4ee1ee5ce43c0c0b6d3df115ddb1b96037ac", script)
+    }
+
+    @Test
     fun testKaspaAddressOrUriValidation() {
         assertTrue(com.example.kaspawallet.ui.components.isKaspaAddressOrUri("kaspa:qq8l8xy3h967q94z48yv6z2g48q32z7y72g48q32z7q"))
         assertTrue(com.example.kaspawallet.ui.components.isKaspaAddressOrUri("kaspa:qq8l8xy3h967q94z48yv6z2g48q32z7y72g48q32z7q?amount=10"))

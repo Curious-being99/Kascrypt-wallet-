@@ -331,11 +331,11 @@ object KaspaCrypto {
             .put(encrypted)
             .array()
 
-        return android.util.Base64.encodeToString(combined, android.util.Base64.NO_WRAP)
+        return java.util.Base64.getEncoder().encodeToString(combined)
     }
 
     fun decryptKeystore(encryptedBase64: String, password: String): String {
-        val combined = android.util.Base64.decode(encryptedBase64, android.util.Base64.NO_WRAP)
+        val combined = java.util.Base64.getDecoder().decode(encryptedBase64)
         val buffer = ByteBuffer.wrap(combined)
 
         val salt = ByteArray(16)

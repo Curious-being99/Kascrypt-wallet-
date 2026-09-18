@@ -93,6 +93,8 @@ fun SendKasDialog(
         }
     }
 
+    var isCoinControlExpanded by remember { mutableStateOf(false) }
+    var enableManualCoinControl by remember { mutableStateOf(false) }
     var selectedUtxoKeys by remember(utxos) {
         mutableStateOf(utxos.map { "${it.outpointTxId}:${it.outpointIndex}" }.toSet())
     }
@@ -101,10 +103,13 @@ fun SendKasDialog(
     val selectedUtxosSumSompi = selectedUtxosList.sumOf { it.amountSompi }
     val selectedUtxosSumKas = KaspaUtils.sompiToKas(selectedUtxosSumSompi)
 
-    val availableKas = if (utxos.isNotEmpty()) {
+    val totalAccountKas = activeAccount?.let { KaspaUtils.sompiToKas(it.balanceSompi) }
+        ?: if (utxos.isNotEmpty()) KaspaUtils.sompiToKas(utxos.sumOf { it.amountSompi }) else 0.0
+
+    val availableKas = if (enableManualCoinControl) {
         selectedUtxosSumKas
     } else {
-        activeAccount?.let { KaspaUtils.sompiToKas(it.balanceSompi) } ?: 0.0
+        totalAccountKas
     }
     val amountKas = amountText.toDoubleOrNull() ?: 0.0
     val feeKas = when (selectedFeeOption) {
@@ -207,122 +212,149 @@ fun SendKasDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text("UTXO Coin Control", color = KaspaTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                Text("Coin Control (UTXOs)", color = KaspaTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "Selected: ${KaspaUtils.formatKas(availableKas)} (${selectedUtxosList.size}/${utxos.size} inputs)",
-                                    color = KaspaPrimaryGlow,
+                                    if (enableManualCoinControl) {
+                                        "Manual Selection: ${KaspaUtils.formatKas(availableKas)} (${selectedUtxosList.size}/${utxos.size} inputs)"
+                                    } else {
+                                        "Automatic Optimal Selection (${KaspaUtils.formatKas(availableKas)})"
+                                    },
+                                    color = if (enableManualCoinControl) KaspaPrimaryGlow else KaspaTextSecondary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium
                                 )
                             }
                             
-                            var isExpanded by remember { mutableStateOf(false) }
-                            Box(modifier = Modifier.noRippleClickable { isExpanded = !isExpanded }) {
+                            Box(modifier = Modifier.noRippleClickable { isCoinControlExpanded = !isCoinControlExpanded }) {
                                 Icon(
-                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    imageVector = if (isCoinControlExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                     contentDescription = "Toggle UTXOs",
                                     tint = KaspaPrimary
                                 )
                             }
                         }
 
-                        if (utxos.isEmpty()) {
-                            Text(
-                                "No UTXOs found or loading...",
-                                color = KaspaTextMuted,
-                                fontSize = 13.sp,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        } else {
-                            var isExpanded by remember { mutableStateOf(false) }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .noRippleClickable {
-                                            selectedUtxoKeys = utxos.map { "${it.outpointTxId}:${it.outpointIndex}" }.toSet()
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                        AnimatedVisibility(visible = isCoinControlExpanded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                HorizontalDivider(color = KaspaCardBorder)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Select All", color = KaspaPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Column {
+                                        Text("Manual Coin Control", color = KaspaTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                        Text("Select specific unspent outputs to spend", color = KaspaTextMuted, fontSize = 11.sp)
+                                    }
+                                    Switch(
+                                        checked = enableManualCoinControl,
+                                        onCheckedChange = { enableManualCoinControl = it },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color(0xFF003731),
+                                            checkedTrackColor = KaspaPrimary,
+                                            uncheckedThumbColor = KaspaTextMuted,
+                                            uncheckedTrackColor = KaspaSurfaceVariant
+                                        )
+                                    )
                                 }
 
-                                Box(
-                                    modifier = Modifier
-                                        .noRippleClickable {
-                                            selectedUtxoKeys = emptySet()
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text("Deselect All", color = KaspaError, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-
-                            AnimatedVisibility(visible = isExpanded || true) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 140.dp)
-                                        .verticalScroll(rememberScrollState())
-                                        .background(KaspaSurfaceVariant)
-                                        .padding(4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    utxos.forEach { utxo ->
-                                        val key = "${utxo.outpointTxId}:${utxo.outpointIndex}"
-                                        val isChecked = key in selectedUtxoKeys
-                                        Row(
+                                if (utxos.isEmpty()) {
+                                    Text(
+                                        "No confirmed UTXOs found on network.",
+                                        color = KaspaTextMuted,
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    )
+                                } else if (enableManualCoinControl) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(
                                             modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(8.dp))
                                                 .noRippleClickable {
-                                                    selectedUtxoKeys = if (isChecked) {
-                                                        selectedUtxoKeys - key
-                                                    } else {
-                                                        selectedUtxoKeys + key
+                                                    selectedUtxoKeys = utxos.map { "${it.outpointTxId}:${it.outpointIndex}" }.toSet()
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Select All", color = KaspaPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .noRippleClickable {
+                                                    selectedUtxoKeys = emptySet()
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Deselect All", color = KaspaError, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 150.dp)
+                                            .verticalScroll(rememberScrollState())
+                                            .background(KaspaSurfaceVariant, RoundedCornerShape(8.dp))
+                                            .padding(4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        utxos.forEach { utxo ->
+                                            val key = "${utxo.outpointTxId}:${utxo.outpointIndex}"
+                                            val isChecked = key in selectedUtxoKeys
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .noRippleClickable {
+                                                        selectedUtxoKeys = if (isChecked) {
+                                                            selectedUtxoKeys - key
+                                                        } else {
+                                                            selectedUtxoKeys + key
+                                                        }
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Checkbox(
+                                                        checked = isChecked,
+                                                        onCheckedChange = null,
+                                                        colors = CheckboxDefaults.colors(
+                                                            checkedColor = KaspaPrimary,
+                                                            uncheckedColor = KaspaCardBorder,
+                                                            checkmarkColor = Color(0xFF003731)
+                                                        ),
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column {
+                                                        Text(
+                                                            text = "Tx: ${KaspaUtils.truncateAddress(utxo.outpointTxId, 10, 8)} #${utxo.outpointIndex}",
+                                                            color = KaspaTextPrimary,
+                                                            fontSize = 11.sp,
+                                                            fontFamily = FontFamily.Monospace
+                                                        )
+                                                        Text(
+                                                            text = "Score: ${utxo.blockDaaScore}",
+                                                            color = KaspaTextMuted,
+                                                            fontSize = 10.sp
+                                                        )
                                                     }
                                                 }
-                                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Checkbox(
-                                                    checked = isChecked,
-                                                    onCheckedChange = null,
-                                                    colors = CheckboxDefaults.colors(
-                                                        checkedColor = KaspaPrimary,
-                                                        uncheckedColor = KaspaCardBorder,
-                                                        checkmarkColor = Color(0xFF003731)
-                                                    ),
-                                                    modifier = Modifier.size(24.dp)
+                                                Text(
+                                                    text = KaspaUtils.formatSompi(utxo.amountSompi),
+                                                    color = KaspaPrimaryGlow,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold
                                                 )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Column {
-                                                    Text(
-                                                        text = "Tx: ${KaspaUtils.truncateAddress(utxo.outpointTxId, 10, 8)} #${utxo.outpointIndex}",
-                                                        color = KaspaTextPrimary,
-                                                        fontSize = 11.sp,
-                                                        fontFamily = FontFamily.Monospace
-                                                    )
-                                                    Text(
-                                                        text = "Score: ${utxo.blockDaaScore}",
-                                                        color = KaspaTextMuted,
-                                                        fontSize = 10.sp
-                                                    )
-                                                }
                                             }
-                                            Text(
-                                                text = KaspaUtils.formatSompi(utxo.amountSompi),
-                                                color = KaspaPrimaryGlow,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
                                         }
                                     }
                                 }
@@ -504,7 +536,7 @@ fun SendKasDialog(
                                         amountKas = amountKas,
                                         feeOption = selectedFeeOption,
                                         note = noteText,
-                                        manualUtxos = selectedUtxosList
+                                        manualUtxos = if (enableManualCoinControl) selectedUtxosList else null
                                     )
                                 },
                                 onError = { _ ->
@@ -613,7 +645,7 @@ fun SendKasDialog(
                                 amountKas = amountKas,
                                 feeOption = selectedFeeOption,
                                 note = noteText,
-                                manualUtxos = selectedUtxosList
+                                manualUtxos = if (enableManualCoinControl) selectedUtxosList else null
                             )
                         } else {
                             Toast.makeText(context, "Invalid wallet password or seed phrase", Toast.LENGTH_LONG).show()

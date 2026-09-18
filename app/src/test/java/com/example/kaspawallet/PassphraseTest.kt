@@ -1,39 +1,10 @@
 package com.example.kaspawallet
 
-import android.content.Context
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import com.example.kaspawallet.data.crypto.KaspaCrypto
-import com.example.kaspawallet.data.crypto.KaspaUtils
-import com.example.kaspawallet.data.local.KaspaDatabase
-import com.example.kaspawallet.data.repository.KaspaWalletRepository
-import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.*
-import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 
-@RunWith(RobolectricTestRunner::class)
 class PassphraseTest {
-    private lateinit var db: KaspaDatabase
-    private lateinit var repo: KaspaWalletRepository
-
-    @Before
-    fun createDb() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        db = Room.inMemoryDatabaseBuilder(
-            context, KaspaDatabase::class.java
-        ).allowMainThreadQueries().build()
-        // Simple mock of API client is needed if repository calls it on createWallet
-    }
-
-    @After
-    fun closeDb() {
-        db.close()
-    }
-    
     @Test
     fun testPassphraseEncryption() {
         // Just testing crypto logic
@@ -51,5 +22,21 @@ class PassphraseTest {
         val seedWithPassphrase = KaspaCrypto.mnemonicToSeed(mnemonic, "my_passphrase")
         
         assertNotEquals(seedWithoutPassphrase.toList(), seedWithPassphrase.toList())
+    }
+
+    @Test
+    fun testPassphraseAddressDerivation() {
+        val mnemonic = listOf("abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "about")
+        val network = com.example.kaspawallet.data.model.KaspaNetwork.MAINNET
+
+        val addrWithoutPassphrase = KaspaCrypto.deriveKaspaAddress(mnemonic, 0, 0, network, "")
+        val addrWithPassphrase = KaspaCrypto.deriveKaspaAddress(mnemonic, 0, 0, network, "my_passphrase")
+        assertNotEquals(addrWithoutPassphrase, addrWithPassphrase)
+        assertTrue(addrWithPassphrase.startsWith("kaspa:"))
+
+        val changeWithout = KaspaCrypto.deriveKaspaChangeAddress(mnemonic, 0, 0, network, "")
+        val changeWith = KaspaCrypto.deriveKaspaChangeAddress(mnemonic, 0, 0, network, "my_passphrase")
+        assertNotEquals(changeWithout, changeWith)
+        assertTrue(changeWith.startsWith("kaspa:"))
     }
 }

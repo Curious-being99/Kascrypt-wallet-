@@ -250,14 +250,15 @@ class KaspaWalletRepository(
         val wallet = database.walletDao().getWalletById(account.walletId)
             ?: return@withContext Pair(false, "Wallet not found")
         val words = getWalletMnemonicWords(wallet)
+        val passphrase = getWalletPassphrase(wallet)
         if (words.isEmpty()) {
             return@withContext Pair(false, "Cannot decrypt seed words")
         }
         val network = _currentNetwork.value
         val derivedAddr = if (branch == 0) {
-            KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addressIndex, network)
+            KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addressIndex, network, passphrase)
         } else {
-            KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addressIndex, network)
+            KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addressIndex, network, passphrase)
         }
 
         val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
@@ -319,6 +320,7 @@ class KaspaWalletRepository(
     suspend fun recoverAllChangeAddresses(account: AccountEntity): Pair<Int, Long> = withContext(Dispatchers.IO) {
         val wallet = database.walletDao().getWalletById(account.walletId) ?: return@withContext Pair(0, 0L)
         val words = getWalletMnemonicWords(wallet)
+        val passphrase = getWalletPassphrase(wallet)
         if (words.isEmpty()) return@withContext Pair(0, 0L)
         val network = _currentNetwork.value
         var recoveredCount = 0
@@ -328,9 +330,9 @@ class KaspaWalletRepository(
             val startIdx = if (branch == 0) 1 else 0
             for (idx in startIdx until 30) {
                 val derivedAddr = if (branch == 0) {
-                    KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, idx, network)
+                    KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, idx, network, passphrase)
                 } else {
-                    KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network)
+                    KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, idx, network, passphrase)
                 }
                 val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
                 if (utxos.isNotEmpty()) {
@@ -513,11 +515,13 @@ class KaspaWalletRepository(
         val wallet = database.walletDao().getWalletById(account.walletId) ?: return@withContext account.address
         val words = getWalletMnemonicWords(wallet)
         if (words.isEmpty()) return@withContext account.address
+        val passphrase = getWalletPassphrase(wallet)
         KaspaCrypto.deriveKaspaChangeAddress(
             mnemonic = words,
             accountIndex = account.accountIndex,
             addressIndex = index,
-            network = _currentNetwork.value
+            network = _currentNetwork.value,
+            passphrase = passphrase
         )
     }
 
@@ -553,6 +557,7 @@ class KaspaWalletRepository(
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
             val words = getWalletMnemonicWords(wallet)
+            val passphrase = getWalletPassphrase(wallet)
             val seed = getWalletSeed(wallet)
 
             // Change output returns directly to the sender's account address
@@ -563,22 +568,14 @@ class KaspaWalletRepository(
             val availableUtxos = mutableListOf<UtxoEntry>()
             availableUtxos.addAll(livePrimary)
 
-            // Also include cached/indexed UTXOs from change addresses
-            val cachedUtxos = _accountUtxos.value[senderAccount.id] ?: emptyList()
-            for (u in cachedUtxos) {
-                if (!availableUtxos.any { it.outpointTxId == u.outpointTxId && it.outpointIndex == u.outpointIndex }) {
-                    availableUtxos.add(u)
-                }
-            }
-
-            // If primary address UTXOs are insufficient, check change & secondary address indices live
+            // If primary address UTXOs are insufficient, check change & secondary address indices live directly from network
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
                 for (branch in listOf(1, 0)) {
                     for (idx in 0 until 30) {
                         val addr = if (branch == 0) {
-                            KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
+                            KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value, passphrase)
                         } else {
-                            KaspaCrypto.deriveKaspaChangeAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
+                            KaspaCrypto.deriveKaspaChangeAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value, passphrase)
                         }
                         if (addr.isNotBlank() && addr != senderAccount.address) {
                             val extraUtxos = apiClient.fetchAddressUtxos(addr, _currentNetwork.value)
@@ -595,23 +592,39 @@ class KaspaWalletRepository(
             }
 
             val selectedUtxos = if (manualUtxos != null && manualUtxos.isNotEmpty()) {
-                val selectedSum = manualUtxos.sumOf { it.amountSompi }
+                // Ensure every manually selected UTXO actually exists in the live unspent set to avoid orphan errors
+                val verifiedManual = manualUtxos.filter { m ->
+                    availableUtxos.any { it.outpointTxId == m.outpointTxId && it.outpointIndex == m.outpointIndex }
+                }
+                val selectedSum = verifiedManual.sumOf { it.amountSompi }
                 if (selectedSum < totalDebit) {
-                    throw IllegalArgumentException("Selected UTXOs sum is insufficient. Selected: ${KaspaUtils.formatSompi(selectedSum)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
+                    throw IllegalArgumentException("Selected UTXOs are insufficient or have already been spent on-chain. Live available: ${KaspaUtils.formatSompi(selectedSum)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
                 }
-                manualUtxos
+                verifiedManual
             } else if (availableUtxos.isNotEmpty()) {
-                val selected = mutableListOf<UtxoEntry>()
-                var accumulated = 0L
-                for (u in availableUtxos) {
-                    selected.add(u)
-                    accumulated += u.amountSompi
-                    if (accumulated >= totalDebit) break
+                // Optimal Coin Selection:
+                // 1. Prefer single UTXO (smallest UTXO that covers totalDebit) to minimize transaction mass & fees
+                val singleMatch = availableUtxos
+                    .filter { it.amountSompi >= totalDebit }
+                    .minByOrNull { it.amountSompi }
+
+                if (singleMatch != null) {
+                    listOf(singleMatch)
+                } else {
+                    // 2. Sort descending (largest first) to minimize input count and transaction mass
+                    val sorted = availableUtxos.sortedByDescending { it.amountSompi }
+                    val selected = mutableListOf<UtxoEntry>()
+                    var accumulated = 0L
+                    for (u in sorted) {
+                        selected.add(u)
+                        accumulated += u.amountSompi
+                        if (accumulated >= totalDebit) break
+                    }
+                    if (accumulated < totalDebit) {
+                        throw IllegalStateException("Insufficient confirmed UTXOs on Kaspa ${_currentNetwork.value.displayName}. Available: ${KaspaUtils.formatSompi(accumulated)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
+                    }
+                    selected
                 }
-                if (accumulated < totalDebit) {
-                    throw IllegalStateException("Insufficient confirmed UTXOs on Kaspa ${_currentNetwork.value.displayName}. Available: ${KaspaUtils.formatSompi(accumulated)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
-                }
-                selected
             } else {
                 throw IllegalStateException("No confirmed UTXOs found for address ${senderAccount.address} on Kaspa ${_currentNetwork.value.displayName}. Please fund this address before sending.")
             }
@@ -637,6 +650,10 @@ class KaspaWalletRepository(
             Log.i("KaspaWalletRepository", "Broadcast result: $broadcastSuccess ($responseMsg)")
 
             if (!broadcastSuccess) {
+                // If broadcast was rejected by node (e.g. orphan / spent), immediately refresh on-chain state to purge stale UTXOs
+                repositoryScope.launch {
+                    syncAccountOnChain(senderAccount.id)
+                }
                 throw IllegalStateException("Transaction broadcast rejected by Kaspa network: $responseMsg")
             }
 
@@ -715,6 +732,7 @@ class KaspaWalletRepository(
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
             val words = getWalletMnemonicWords(wallet)
+            val passphrase = getWalletPassphrase(wallet)
             val seed = getWalletSeed(wallet)
 
             val changeAddress = senderAccount.address
@@ -722,20 +740,13 @@ class KaspaWalletRepository(
             val availableUtxos = mutableListOf<UtxoEntry>()
             availableUtxos.addAll(livePrimary)
 
-            val cachedUtxos = _accountUtxos.value[senderAccount.id] ?: emptyList()
-            for (u in cachedUtxos) {
-                if (!availableUtxos.any { it.outpointTxId == u.outpointTxId && it.outpointIndex == u.outpointIndex }) {
-                    availableUtxos.add(u)
-                }
-            }
-
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
                 for (branch in listOf(1, 0)) {
                     for (idx in 0 until 30) {
                         val addr = if (branch == 0) {
-                            KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
+                            KaspaCrypto.deriveKaspaAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value, passphrase)
                         } else {
-                            KaspaCrypto.deriveKaspaChangeAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value)
+                            KaspaCrypto.deriveKaspaChangeAddress(words, senderAccount.accountIndex, idx, _currentNetwork.value, passphrase)
                         }
                         if (addr.isNotBlank() && addr != senderAccount.address) {
                             val extraUtxos = apiClient.fetchAddressUtxos(addr, _currentNetwork.value)
@@ -751,15 +762,25 @@ class KaspaWalletRepository(
                 }
             }
 
-            val selected = mutableListOf<UtxoEntry>()
-            var accumulated = 0L
-            for (u in availableUtxos) {
-                selected.add(u)
-                accumulated += u.amountSompi
-                if (accumulated >= totalDebit) break
-            }
-            if (accumulated < totalDebit) {
-                throw IllegalStateException("Insufficient confirmed UTXOs on Kaspa ${_currentNetwork.value.displayName}. Available: ${KaspaUtils.formatSompi(accumulated)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
+            val singleMatch = availableUtxos
+                .filter { it.amountSompi >= totalDebit }
+                .minByOrNull { it.amountSompi }
+
+            val selected = if (singleMatch != null) {
+                listOf(singleMatch)
+            } else {
+                val sorted = availableUtxos.sortedByDescending { it.amountSompi }
+                val accList = mutableListOf<UtxoEntry>()
+                var accumulated = 0L
+                for (u in sorted) {
+                    accList.add(u)
+                    accumulated += u.amountSompi
+                    if (accumulated >= totalDebit) break
+                }
+                if (accumulated < totalDebit) {
+                    throw IllegalStateException("Insufficient confirmed UTXOs on Kaspa ${_currentNetwork.value.displayName}. Available: ${KaspaUtils.formatSompi(accumulated)}, Required: ${KaspaUtils.formatSompi(totalDebit)}")
+                }
+                accList
             }
 
             val (signedTxJson, txId) = try {
