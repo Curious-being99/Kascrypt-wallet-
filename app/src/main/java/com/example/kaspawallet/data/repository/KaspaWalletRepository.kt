@@ -69,22 +69,23 @@ class KaspaWalletRepository(
     fun getWalletMnemonicWords(wallet: WalletEntity?, explicitPassword: String? = null): List<String> {
         val stored = wallet?.encryptedMnemonic ?: return emptyList()
         val pwd = explicitPassword ?: activeSessionPassword
-        return KaspaCrypto.decryptMnemonic(stored, pwd)
+        val words = KaspaCrypto.decryptMnemonic(stored, pwd)
+        if (words.isNotEmpty()) return words
+        // Fallback: try decrypting with empty password in case it was stored with device key
+        return KaspaCrypto.decryptMnemonic(stored, "")
     }
 
     fun getWalletPassphrase(wallet: WalletEntity?, explicitPassword: String? = null): String {
         if (wallet == null || !wallet.hasPassphrase || wallet.encryptedPassphrase.isBlank()) return ""
         val pwd = explicitPassword ?: activeSessionPassword
-        return try {
-            KaspaCrypto.decryptKeystore(wallet.encryptedPassphrase, pwd)
-        } catch (e: Exception) {
-            ""
-        }
+        return KaspaCrypto.decryptPassphrase(wallet.encryptedPassphrase, pwd)
     }
 
-    fun getWalletSeed(wallet: WalletEntity?, explicitPassword: String? = null): ByteArray {
-        val words = getWalletMnemonicWords(wallet, explicitPassword)
-        if (words.isEmpty()) return ByteArray(64)
+    fun getWalletSeed(wallet: WalletEntity?, explicitPassword: String? = null, explicitWords: List<String>? = null): ByteArray {
+        val words = if (explicitWords != null && explicitWords.isNotEmpty()) explicitWords else getWalletMnemonicWords(wallet, explicitPassword)
+        if (words.isEmpty()) {
+            throw IllegalStateException("Unable to decrypt wallet seed phrase. Please unlock your wallet with your password or seed phrase.")
+        }
         val passphrase = getWalletPassphrase(wallet, explicitPassword)
         return KaspaCrypto.mnemonicToSeed(words, passphrase)
     }
@@ -559,7 +560,7 @@ class KaspaWalletRepository(
             encryptedMnemonic = KaspaCrypto.encryptMnemonic(mnemonicWords, password),
             wordCount = mnemonicWords.size,
             hasPassphrase = hasPassphrase,
-            encryptedPassphrase = if (hasPassphrase && passphrase.isNotBlank()) KaspaCrypto.encryptKeystore(passphrase, password) else "",
+            encryptedPassphrase = if (hasPassphrase && passphrase.isNotBlank()) KaspaCrypto.encryptPassphrase(passphrase, password) else "",
             isLocked = false
         )
         database.walletDao().insertWallet(wallet)
@@ -682,15 +683,20 @@ class KaspaWalletRepository(
         amountSompi: Long,
         feeSompi: Long,
         note: String,
-        manualUtxos: List<UtxoEntry>? = null
+        manualUtxos: List<UtxoEntry>? = null,
+        explicitPassword: String? = null,
+        explicitWords: List<String>? = null
     ): TransactionEntity = withContext(Dispatchers.IO) {
+        if (!explicitPassword.isNullOrBlank()) {
+            activeSessionPassword = explicitPassword
+        }
         sendTransactionMutex.withLock {
             val totalDebit = amountSompi + feeSompi
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
-            val words = getWalletMnemonicWords(wallet)
-            val passphrase = getWalletPassphrase(wallet)
-            val seed = getWalletSeed(wallet)
+            val words = if (explicitWords != null && explicitWords.isNotEmpty()) explicitWords else getWalletMnemonicWords(wallet, explicitPassword)
+            val passphrase = getWalletPassphrase(wallet, explicitPassword)
+            val seed = getWalletSeed(wallet, explicitPassword, explicitWords)
 
             // Change output returns directly to the sender's account address
             val changeAddress = senderAccount.address
@@ -832,7 +838,6 @@ class KaspaWalletRepository(
             }
 
             repositoryScope.launch {
-                kotlinx.coroutines.delay(1500)
                 syncAccountOnChain(senderAccount.id)
             }
 
@@ -868,7 +873,8 @@ class KaspaWalletRepository(
         targetAccount: AccountEntity,
         amountSompi: Long,
         feeSompi: Long,
-        note: String
+        note: String,
+        explicitPassword: String? = null
     ): TransactionEntity = withContext(Dispatchers.IO) {
         val transferNote = if (note.isBlank()) "Transfer to ${targetAccount.name}" else note
         val tx = sendKas(
@@ -876,7 +882,8 @@ class KaspaWalletRepository(
             recipientAddress = targetAccount.address,
             amountSompi = amountSompi,
             feeSompi = feeSompi,
-            note = transferNote
+            note = transferNote,
+            explicitPassword = explicitPassword
         )
         val transferTx = tx.copy(txType = TransactionType.TRANSFER)
         database.transactionDao().insertTransaction(transferTx)
@@ -886,16 +893,21 @@ class KaspaWalletRepository(
     suspend fun sendMassKas(
         senderAccount: AccountEntity,
         recipients: List<Pair<String, Long>>,
-        feeSompi: Long
+        feeSompi: Long,
+        explicitPassword: String? = null,
+        explicitWords: List<String>? = null
     ): TransactionEntity = withContext(Dispatchers.IO) {
+        if (!explicitPassword.isNullOrBlank()) {
+            activeSessionPassword = explicitPassword
+        }
         sendTransactionMutex.withLock {
             val totalPayment = recipients.sumOf { it.second }
             val totalDebit = totalPayment + feeSompi
 
             val wallet = database.walletDao().getWalletById(senderAccount.walletId)
-            val words = getWalletMnemonicWords(wallet)
-            val passphrase = getWalletPassphrase(wallet)
-            val seed = getWalletSeed(wallet)
+            val words = if (explicitWords != null && explicitWords.isNotEmpty()) explicitWords else getWalletMnemonicWords(wallet, explicitPassword)
+            val passphrase = getWalletPassphrase(wallet, explicitPassword)
+            val seed = getWalletSeed(wallet, explicitPassword, explicitWords)
 
             val changeAddress = senderAccount.address
             val livePrimary = apiClient.fetchAddressUtxos(senderAccount.address, _currentNetwork.value)

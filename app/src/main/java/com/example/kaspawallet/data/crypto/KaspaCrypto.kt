@@ -377,6 +377,7 @@ object KaspaCrypto {
      * Decrypts a stored mnemonic from SQLite, supporting password-encrypted, device-encrypted fallback, and legacy formats.
      */
     fun decryptMnemonic(stored: String, password: String = ""): List<String> {
+        if (stored.isBlank()) return emptyList()
         return try {
             val parts = stored.split("|")
             for (part in parts) {
@@ -399,12 +400,75 @@ object KaspaCrypto {
                     } catch (_: Exception) {}
                 }
             }
-            // Fallback for plain words or single string
+            // Fallback: try direct decryption with password if provided (for legacy single-encrypted stores)
+            if (password.isNotBlank()) {
+                try {
+                    val rawClean = stored.removePrefix("ENC:").removePrefix("DEV:").trim()
+                    val plain = decryptKeystore(rawClean, password)
+                    val words = plain.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+                    if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) return words
+                } catch (_: Exception) {}
+            }
+            // Fallback: try direct decryption with DEVICE_FALLBACK_KEY
+            try {
+                val rawClean = stored.removePrefix("ENC:").removePrefix("DEV:").trim()
+                val plain = decryptKeystore(rawClean, DEVICE_FALLBACK_KEY)
+                val words = plain.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+                if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) return words
+            } catch (_: Exception) {}
+            // Fallback for plain words or unencrypted string
             val clean = stored.removePrefix("ENC:").removePrefix("DEV:").trim()
             val words = clean.split("\\s+".toRegex()).filter { it.isNotBlank() }
             if (words.isNotEmpty() && words.all { Bip39WordList.isValidWord(it) }) words else emptyList()
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    /**
+     * Encrypts a passphrase with dual encryption (user password and device-fallback key)
+     */
+    fun encryptPassphrase(passphrase: String, password: String = ""): String {
+        if (passphrase.isBlank()) return ""
+        return if (password.isNotBlank()) {
+            "ENC:" + encryptKeystore(passphrase, password) + "|DEV:" + encryptKeystore(passphrase, DEVICE_FALLBACK_KEY)
+        } else {
+            "DEV:" + encryptKeystore(passphrase, DEVICE_FALLBACK_KEY)
+        }
+    }
+
+    /**
+     * Decrypts a stored passphrase with password and device fallback support
+     */
+    fun decryptPassphrase(stored: String, password: String = ""): String {
+        if (stored.isBlank()) return ""
+        val parts = stored.split("|")
+        for (part in parts) {
+            if (part.startsWith("ENC:") && password.isNotBlank()) {
+                try {
+                    val plain = decryptKeystore(part.removePrefix("ENC:"), password)
+                    if (plain.isNotBlank()) return plain
+                } catch (_: Exception) {}
+            }
+        }
+        for (part in parts) {
+            if (part.startsWith("DEV:")) {
+                try {
+                    val plain = decryptKeystore(part.removePrefix("DEV:"), DEVICE_FALLBACK_KEY)
+                    if (plain.isNotBlank()) return plain
+                } catch (_: Exception) {}
+            }
+        }
+        if (password.isNotBlank()) {
+            try {
+                val plain = decryptKeystore(stored.removePrefix("ENC:").removePrefix("DEV:"), password)
+                if (plain.isNotBlank()) return plain
+            } catch (_: Exception) {}
+        }
+        try {
+            val plain = decryptKeystore(stored.removePrefix("ENC:").removePrefix("DEV:"), DEVICE_FALLBACK_KEY)
+            if (plain.isNotBlank()) return plain
+        } catch (_: Exception) {}
+        return stored.removePrefix("ENC:").removePrefix("DEV:").trim()
     }
 }

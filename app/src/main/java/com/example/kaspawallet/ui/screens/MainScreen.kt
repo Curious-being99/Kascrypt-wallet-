@@ -96,6 +96,16 @@ fun MainScreen(
         return
     }
 
+    // Full-Page Transaction Status & Live Broadcast Receipt Screen
+    if (state.showTxStatusScreen && state.activePendingTx != null) {
+        TransactionStatusScreen(
+            pendingTx = state.activePendingTx,
+            network = state.network,
+            onDone = { viewModel.dismissTxStatusScreen() }
+        )
+        return
+    }
+
     Scaffold(
         containerColor = KaspaBackground,
         contentWindowInsets = WindowInsets.safeDrawing,

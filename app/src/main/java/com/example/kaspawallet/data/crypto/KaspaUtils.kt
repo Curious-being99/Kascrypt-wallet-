@@ -157,14 +157,100 @@ object KaspaUtils {
     }
 
     fun isValidKaspaAddress(address: String, network: KaspaNetwork? = null): Boolean {
-        val trimmed = address.trim()
-        if (trimmed.length < 30 || trimmed.length > 90) return false
+        val trimmed = address.trim().lowercase()
+        if (trimmed.length < 30 || trimmed.length > 95) return false
         val validPrefixes = if (network != null) {
-            listOf(network.prefix)
+            listOf(network.prefix.lowercase())
         } else {
             listOf("kaspa:", "kaspatest:", "kaspadev:", "kaspasim:")
         }
         if (!validPrefixes.any { trimmed.startsWith(it) }) return false
         return KaspaCrypto.verifyKaspaAddress(trimmed)
+    }
+
+    enum class AddressValidationState {
+        EMPTY,
+        VALID,
+        VALID_OTHER_NETWORK,
+        INVALID
+    }
+
+    data class AddressValidationResult(
+        val state: AddressValidationState,
+        val normalizedAddress: String,
+        val message: String,
+        val detectedNetwork: KaspaNetwork? = null
+    )
+
+    fun validateKaspaAddress(input: String, currentNetwork: KaspaNetwork): AddressValidationResult {
+        val trimmed = input.trim().lowercase()
+        if (trimmed.isEmpty()) {
+            return AddressValidationResult(
+                state = AddressValidationState.EMPTY,
+                normalizedAddress = "",
+                message = "Enter recipient Kaspa address"
+            )
+        }
+
+        // Check if user entered address with a prefix
+        if (trimmed.contains(":")) {
+            if (isValidKaspaAddress(trimmed, currentNetwork)) {
+                return AddressValidationResult(
+                    state = AddressValidationState.VALID,
+                    normalizedAddress = trimmed,
+                    message = "Valid ${currentNetwork.displayName} address",
+                    detectedNetwork = currentNetwork
+                )
+            }
+
+            // Check if it belongs to another Kaspa network
+            for (net in KaspaNetwork.values()) {
+                if (net != currentNetwork && isValidKaspaAddress(trimmed, net)) {
+                    return AddressValidationResult(
+                        state = AddressValidationState.VALID_OTHER_NETWORK,
+                        normalizedAddress = trimmed,
+                        message = "Valid ${net.displayName} address, but wallet is on ${currentNetwork.displayName}",
+                        detectedNetwork = net
+                    )
+                }
+            }
+
+            return AddressValidationResult(
+                state = AddressValidationState.INVALID,
+                normalizedAddress = trimmed,
+                message = "Invalid Kaspa address checksum or format"
+            )
+        }
+
+        // If user omitted prefix (e.g. "qq..." or "qr...")
+        val withPrefix = "${currentNetwork.prefix.lowercase()}$trimmed"
+        if (isValidKaspaAddress(withPrefix, currentNetwork)) {
+            return AddressValidationResult(
+                state = AddressValidationState.VALID,
+                normalizedAddress = withPrefix,
+                message = "Valid ${currentNetwork.displayName} address",
+                detectedNetwork = currentNetwork
+            )
+        }
+
+        for (net in KaspaNetwork.values()) {
+            if (net != currentNetwork) {
+                val candidate = "${net.prefix.lowercase()}$trimmed"
+                if (isValidKaspaAddress(candidate, net)) {
+                    return AddressValidationResult(
+                        state = AddressValidationState.VALID_OTHER_NETWORK,
+                        normalizedAddress = candidate,
+                        message = "Valid ${net.displayName} address payload",
+                        detectedNetwork = net
+                    )
+                }
+            }
+        }
+
+        return AddressValidationResult(
+            state = AddressValidationState.INVALID,
+            normalizedAddress = trimmed,
+            message = "Invalid Kaspa address format (e.g. ${currentNetwork.prefix}qq...)"
+        )
     }
 }

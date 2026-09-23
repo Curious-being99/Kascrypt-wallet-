@@ -71,8 +71,8 @@ fun SendKasDialog(
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(state.showTxSuccessDialog) {
-        if (state.showTxSuccessDialog) {
+    LaunchedEffect(state.showTxSuccessDialog, state.showTxStatusScreen) {
+        if (state.showTxSuccessDialog || state.showTxStatusScreen) {
             onDismiss()
         }
     }
@@ -118,7 +118,10 @@ fun SendKasDialog(
         else -> KaspaUtils.sompiToKas(KaspaUtils.PRIORITY_FEE_SOMPI)
     }
     val totalDebitKas = amountKas + feeKas
-    val isAddressValid = KaspaUtils.isValidKaspaAddress(recipientAddress)
+    val addressValidation = remember(recipientAddress, state.network) {
+        KaspaUtils.validateKaspaAddress(recipientAddress, state.network)
+    }
+    val isAddressValid = addressValidation.state == KaspaUtils.AddressValidationState.VALID
     val isAmountValid = amountKas > 0 && totalDebitKas <= availableKas
 
     Dialog(
@@ -366,21 +369,42 @@ fun SendKasDialog(
                 // Recipient Address
                 OutlinedTextField(
                     value = recipientAddress,
-                    onValueChange = { recipientAddress = it.trim() },
+                    onValueChange = { input ->
+                        recipientAddress = input.trim().replace("\n", "").replace("\r", "")
+                    },
                     label = { Text("Recipient Kaspa Address") },
-                    placeholder = { Text("kaspa:qq...") },
+                    placeholder = { Text("${state.network.prefix}qq...") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
+                        focusedBorderColor = if (isAddressValid) KaspaPrimary else if (recipientAddress.isNotEmpty()) KaspaError else KaspaCardBorder,
+                        unfocusedBorderColor = if (isAddressValid) KaspaPrimary.copy(alpha = 0.5f) else if (recipientAddress.isNotEmpty()) KaspaError.copy(alpha = 0.5f) else KaspaCardBorder,
                         focusedTextColor = KaspaTextPrimary,
                         unfocusedTextColor = KaspaTextPrimary,
                         focusedContainerColor = KaspaSurfaceVariant,
                         unfocusedContainerColor = KaspaSurfaceVariant
                     ),
                     trailingIcon = {
-                        Row {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isAddressValid) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Valid Address",
+                                    tint = KaspaPrimary,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .padding(end = 2.dp)
+                                )
+                            } else if (recipientAddress.isNotEmpty()) {
+                                Icon(
+                                    imageVector = Icons.Default.ErrorOutline,
+                                    contentDescription = "Invalid Address",
+                                    tint = KaspaError,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .padding(end = 2.dp)
+                                )
+                            }
                             IconButton(onClick = { showQrScanner = true }) {
                                 Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan QR", tint = KaspaPrimary)
                             }
@@ -393,7 +417,7 @@ fun SendKasDialog(
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
                                 if (!clip.isNullOrBlank()) {
-                                    recipientAddress = clip.trim()
+                                    recipientAddress = clip.trim().replace("\n", "").replace("\r", "")
                                 }
                             }) {
                                 Icon(Icons.Outlined.ContentPaste, contentDescription = "Paste", tint = KaspaPrimary)
@@ -402,13 +426,91 @@ fun SendKasDialog(
                     }
                 )
 
-                if (recipientAddress.isNotEmpty() && !isAddressValid) {
-                    Text(
-                        "Invalid Kaspa address format (e.g. kaspa:qq...)",
-                        color = KaspaError,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(start = 4.dp)
-                    )
+                when (addressValidation.state) {
+                    KaspaUtils.AddressValidationState.VALID -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = KaspaPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = addressValidation.message,
+                                color = KaspaPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            if (recipientAddress != addressValidation.normalizedAddress) {
+                                Text(
+                                    text = " (Prefix added)",
+                                    color = KaspaTextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    KaspaUtils.AddressValidationState.VALID_OTHER_NETWORK -> {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = KaspaWarning.copy(alpha = 0.12f)),
+                            border = BorderStroke(1.dp, KaspaWarning.copy(alpha = 0.3f)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = KaspaWarning,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = addressValidation.message,
+                                    color = KaspaWarning,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                    KaspaUtils.AddressValidationState.INVALID -> {
+                        if (recipientAddress.isNotEmpty()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = KaspaError,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = addressValidation.message,
+                                    color = KaspaError,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                    KaspaUtils.AddressValidationState.EMPTY -> {
+                        Text(
+                            text = "Enter a valid Kaspa recipient address (e.g. ${state.network.prefix}qq...)",
+                            color = KaspaTextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                        )
+                    }
                 }
 
                 // Amount
@@ -531,6 +633,7 @@ fun SendKasDialog(
                                 title = "Authorize KAS Transfer",
                                 subtitle = "Scan fingerprint/face to authorize sending ${KaspaUtils.formatKas(amountKas)}",
                                 onSuccess = {
+                                    onDismiss()
                                     viewModel.sendKas(
                                         recipientAddress = recipientAddress,
                                         amountKas = amountKas,
@@ -640,12 +743,19 @@ fun SendKasDialog(
                         val words = KaspaCrypto.decryptMnemonic(activeWallet.encryptedMnemonic, trimmedInput)
                         val isMnemonicValid = (words.isNotEmpty() && words.joinToString(" ") == trimmedInput)
                         if (isPasswordValid || isMnemonicValid) {
+                            if (isPasswordValid) {
+                                viewModel.setSessionPassword(trimmedInput)
+                            }
+                            showAuthPasswordDialog = false
+                            onDismiss()
                             viewModel.sendKas(
                                 recipientAddress = recipientAddress,
                                 amountKas = amountKas,
                                 feeOption = selectedFeeOption,
                                 note = noteText,
-                                manualUtxos = if (enableManualCoinControl) selectedUtxosList else null
+                                manualUtxos = if (enableManualCoinControl) selectedUtxosList else null,
+                                explicitPassword = if (isPasswordValid) trimmedInput else null,
+                                explicitWords = if (isMnemonicValid) words else null
                             )
                         } else {
                             Toast.makeText(context, "Invalid wallet password or seed phrase", Toast.LENGTH_LONG).show()

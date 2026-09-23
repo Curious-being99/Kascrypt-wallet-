@@ -98,6 +98,7 @@ fun WalletUnlockScreen(
         
         val walletId = activeWallet?.id ?: state.wallets.firstOrNull()?.id ?: ""
         if (viewModel.verifyWalletPassword(context, walletId, password)) {
+            viewModel.setSessionPassword(password)
             viewModel.setLockWallet(false)
             isVerifying = false
             Toast.makeText(context, "Wallet unlocked", Toast.LENGTH_SHORT).show()

@@ -19,6 +19,29 @@ enum class MainTab(val title: String) {
     SETTINGS("Settings")
 }
 
+enum class TxExecutionStatus {
+    PENDING,
+    SUCCESSFUL,
+    FAILED
+}
+
+data class PendingTxDetails(
+    val txId: String? = null,
+    val senderAccountName: String,
+    val senderAddress: String,
+    val recipientAddress: String,
+    val amountKas: Double,
+    val amountSompi: Long,
+    val feeKas: Double,
+    val feeSompi: Long,
+    val note: String,
+    val network: KaspaNetwork,
+    val timestamp: Long = System.currentTimeMillis(),
+    val status: TxExecutionStatus = TxExecutionStatus.PENDING,
+    val errorMessage: String? = null,
+    val confirmedTx: TransactionEntity? = null
+)
+
 data class WalletUiState(
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
@@ -39,9 +62,11 @@ data class WalletUiState(
     val errorMessage: String? = null,
     val lastSentTx: TransactionEntity? = null,
     
-    // Dialog states
+    // Dialog & Full Page Navigation states
     val showSendDialog: Boolean = false,
     val showTxSuccessDialog: Boolean = false,
+    val showTxStatusScreen: Boolean = false,
+    val activePendingTx: PendingTxDetails? = null,
     val showReceiveDialog: Boolean = false,
     val showTransferDialog: Boolean = false,
     val showAddAccountDialog: Boolean = false,
@@ -806,16 +831,30 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         }
     }
 
+    fun dismissTxStatusScreen() {
+        _uiState.update { it.copy(showTxStatusScreen = false, activePendingTx = null) }
+    }
+
     fun sendKas(
         recipientAddress: String,
         amountKas: Double,
         feeOption: String,
         customFeeKas: Double = 0.00386,
         note: String = "",
-        manualUtxos: List<UtxoEntry>? = null
+        manualUtxos: List<UtxoEntry>? = null,
+        explicitPassword: String? = null,
+        explicitWords: List<String>? = null
     ) {
         val account = _uiState.value.activeAccount ?: return
-        if (!KaspaUtils.isValidKaspaAddress(recipientAddress)) {
+        val currentNetwork = _uiState.value.network
+        val validation = KaspaUtils.validateKaspaAddress(recipientAddress, currentNetwork)
+        val normalizedRecipient = if (validation.state == KaspaUtils.AddressValidationState.VALID) {
+            validation.normalizedAddress
+        } else {
+            recipientAddress.trim().lowercase()
+        }
+
+        if (!KaspaUtils.isValidKaspaAddress(normalizedRecipient)) {
             _uiState.update { it.copy(errorMessage = "Invalid Kaspa address format") }
             return
         }
@@ -827,23 +866,66 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
             else -> KaspaUtils.PRIORITY_FEE_SOMPI
         }
 
+        val initialPending = PendingTxDetails(
+            txId = null,
+            senderAccountName = account.name,
+            senderAddress = account.address,
+            recipientAddress = normalizedRecipient,
+            amountKas = amountKas,
+            amountSompi = amountSompi,
+            feeKas = KaspaUtils.sompiToKas(feeSompi),
+            feeSompi = feeSompi,
+            note = note,
+            network = currentNetwork,
+            timestamp = System.currentTimeMillis(),
+            status = TxExecutionStatus.PENDING,
+            errorMessage = null,
+            confirmedTx = null
+        )
+
+        // Immediately close dialog and transition to full-page status screen in PENDING state
+        _uiState.update {
+            it.copy(
+                showSendDialog = false,
+                showTxSuccessDialog = false,
+                showTxStatusScreen = true,
+                activePendingTx = initialPending,
+                isLoading = false
+            )
+        }
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
             try {
-                val sentTx = repository.sendKas(account, recipientAddress, amountSompi, feeSompi, note, manualUtxos)
-                _uiState.update {
-                    it.copy(
+                val sentTx = repository.sendKas(
+                    senderAccount = account,
+                    recipientAddress = normalizedRecipient,
+                    amountSompi = amountSompi,
+                    feeSompi = feeSompi,
+                    note = note,
+                    manualUtxos = manualUtxos,
+                    explicitPassword = explicitPassword,
+                    explicitWords = explicitWords
+                )
+                _uiState.update { current ->
+                    current.copy(
                         isLoading = false,
-                        showSendDialog = false,
-                        showTxSuccessDialog = true,
+                        activePendingTx = current.activePendingTx?.copy(
+                            txId = sentTx.id,
+                            status = TxExecutionStatus.SUCCESSFUL,
+                            confirmedTx = sentTx
+                        ),
                         lastSentTx = sentTx,
                         statusMessage = "Sent ${KaspaUtils.formatKas(amountKas)} successfully"
                     )
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
+                _uiState.update { current ->
+                    current.copy(
                         isLoading = false,
+                        activePendingTx = current.activePendingTx?.copy(
+                            status = TxExecutionStatus.FAILED,
+                            errorMessage = e.message ?: "Failed to submit transaction"
+                        ),
                         errorMessage = e.message ?: "Failed to submit transaction"
                     )
                 }
@@ -855,27 +937,62 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         _uiState.update { it.copy(showTxSuccessDialog = false) }
     }
 
-    fun transferBetweenAccounts(targetAccount: AccountEntity, amountKas: Double, note: String = "") {
+    fun transferBetweenAccounts(targetAccount: AccountEntity, amountKas: Double, note: String = "", explicitPassword: String? = null) {
         val source = _uiState.value.activeAccount ?: return
+        val currentNetwork = _uiState.value.network
         val amountSompi = KaspaUtils.kasToSompi(amountKas)
         val feeSompi = KaspaUtils.DEFAULT_MIN_FEE_SOMPI
 
+        val initialPending = PendingTxDetails(
+            txId = null,
+            senderAccountName = source.name,
+            senderAddress = source.address,
+            recipientAddress = targetAccount.address,
+            amountKas = amountKas,
+            amountSompi = amountSompi,
+            feeKas = KaspaUtils.sompiToKas(feeSompi),
+            feeSompi = feeSompi,
+            note = if (note.isBlank()) "Transfer to ${targetAccount.name}" else note,
+            network = currentNetwork,
+            timestamp = System.currentTimeMillis(),
+            status = TxExecutionStatus.PENDING,
+            errorMessage = null,
+            confirmedTx = null
+        )
+
+        _uiState.update {
+            it.copy(
+                showTransferDialog = false,
+                showTxStatusScreen = true,
+                activePendingTx = initialPending,
+                isLoading = false
+            )
+        }
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
             try {
-                repository.transferBetweenAccounts(source, targetAccount, amountSompi, feeSompi, note)
-                _uiState.update {
-                    it.copy(
+                val sentTx = repository.transferBetweenAccounts(source, targetAccount, amountSompi, feeSompi, note, explicitPassword)
+                _uiState.update { current ->
+                    current.copy(
                         isLoading = false,
-                        showTransferDialog = false,
+                        activePendingTx = current.activePendingTx?.copy(
+                            txId = sentTx.id,
+                            status = TxExecutionStatus.SUCCESSFUL,
+                            confirmedTx = sentTx
+                        ),
+                        lastSentTx = sentTx,
                         statusMessage = "Transferred ${KaspaUtils.formatKas(amountKas)} to ${targetAccount.name}"
                     )
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
+                _uiState.update { current ->
+                    current.copy(
                         isLoading = false,
-                        errorMessage = e.message ?: "Transfer failed"
+                        activePendingTx = current.activePendingTx?.copy(
+                            status = TxExecutionStatus.FAILED,
+                            errorMessage = e.message ?: "Internal transfer failed"
+                        ),
+                        errorMessage = e.message ?: "Internal transfer failed"
                     )
                 }
             }
@@ -1021,20 +1138,33 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         }
     }
 
+    fun setSessionPassword(password: String) {
+        if (password.isNotBlank()) {
+            repository.setActiveSessionPassword(password)
+        }
+    }
+
     fun saveWalletPassword(context: android.content.Context, walletId: String, password: String) {
         val prefs = context.getSharedPreferences("wallet_passwords", android.content.Context.MODE_PRIVATE)
         val hashedPassword = hashPassword(walletId, password)
         prefs.edit().putString(walletId, hashedPassword).apply()
+        if (password.isNotBlank()) {
+            repository.setActiveSessionPassword(password)
+        }
     }
 
     fun verifyWalletPassword(context: android.content.Context, walletId: String, password: String): Boolean {
         val prefs = context.getSharedPreferences("wallet_passwords", android.content.Context.MODE_PRIVATE)
         val savedHash = prefs.getString(walletId, null)
         if (savedHash == null) {
+            if (password.isNotBlank()) {
+                repository.setActiveSessionPassword(password)
+            }
             return password.isBlank()
         }
         val computedPbkdf2 = hashPassword(walletId, password)
         if (java.security.MessageDigest.isEqual(savedHash.toByteArray(Charsets.UTF_8), computedPbkdf2.toByteArray(Charsets.UTF_8))) {
+            repository.setActiveSessionPassword(password)
             return true
         }
         // Backward compatibility fallback for wallets hashed with legacy single-round SHA-256
@@ -1045,6 +1175,7 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
         if (legacyHash.isNotEmpty() && java.security.MessageDigest.isEqual(savedHash.toByteArray(Charsets.UTF_8), legacyHash.toByteArray(Charsets.UTF_8))) {
             // Upgrade hash to PBKDF2
             prefs.edit().putString(walletId, computedPbkdf2).apply()
+            repository.setActiveSessionPassword(password)
             return true
         }
         return false

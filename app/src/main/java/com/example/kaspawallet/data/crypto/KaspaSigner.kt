@@ -490,7 +490,7 @@ object KaspaSigner {
         accountIndex: Int = 0,
         gapLimit: Int = 30,
         network: KaspaNetwork = KaspaNetwork.MAINNET
-    ): Map<String, ByteArray> {
+    ): MutableMap<String, ByteArray> {
         val keyMap = mutableMapOf<String, ByteArray>()
         val prefix = when (network) {
             KaspaNetwork.MAINNET -> "kaspa"
@@ -513,6 +513,82 @@ object KaspaSigner {
             }
         }
         return keyMap
+    }
+
+    /**
+     * Resolves the exact private key for a given UTXO scriptPublicKey.
+     * Uses pre-derived cache first, then dynamically expands address indices (up to 500)
+     * and accounts (0..10) to guarantee every valid on-chain UTXO can be spent.
+     */
+    fun findPrivateKeyForScript(
+        seed: ByteArray,
+        accountIndex: Int,
+        cleanScript: String,
+        accountKeyMap: MutableMap<String, ByteArray>,
+        defaultPrivKey: ByteArray,
+        network: KaspaNetwork
+    ): ByteArray {
+        val pubHex = cleanScript.removePrefix("20").removePrefix("21").removePrefix("aa20").removeSuffix("ac").removeSuffix("87")
+        accountKeyMap[cleanScript]?.let { return it }
+        accountKeyMap[pubHex]?.let { return it }
+        accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]?.let { return it }
+
+        // Check if matches defaultPrivKey
+        val defPubHex = byteArrayToHexString(derivePublicKey(defaultPrivKey)).lowercase()
+        if (cleanScript == "20${defPubHex}ac" || pubHex == defPubHex) {
+            accountKeyMap[cleanScript] = defaultPrivKey
+            return defaultPrivKey
+        }
+
+        val prefix = when (network) {
+            KaspaNetwork.MAINNET -> "kaspa"
+            KaspaNetwork.TESTNET_10, KaspaNetwork.TESTNET_11 -> "kaspatest"
+            KaspaNetwork.DEVNET -> "kaspadev"
+            KaspaNetwork.SIMNET -> "kaspasim"
+        }
+
+        // 1. Dynamically search higher address indices (100 to 500) on current account
+        for (branch in listOf(0, 1)) {
+            for (idx in 100 until 500) {
+                val candPriv = derivePrivateKey(seed, accountIndex, branch, idx)
+                val candPub = derivePublicKey(candPriv)
+                val candPubHex = byteArrayToHexString(candPub).lowercase()
+                val candScript = "20${candPubHex}ac"
+                val candAddr = KaspaCrypto.encodeKaspaAddress(prefix, 0.toByte(), candPub).lowercase()
+
+                accountKeyMap[candScript] = candPriv
+                accountKeyMap[candPubHex] = candPriv
+                accountKeyMap[candAddr] = candPriv
+
+                if (candScript == cleanScript || candPubHex == pubHex) {
+                    return candPriv
+                }
+            }
+        }
+
+        // 2. Dynamically search other account indices (0 to 10) for this seed
+        for (accIdx in 0..10) {
+            if (accIdx == accountIndex) continue
+            for (branch in listOf(0, 1)) {
+                for (idx in 0 until 100) {
+                    val candPriv = derivePrivateKey(seed, accIdx, branch, idx)
+                    val candPub = derivePublicKey(candPriv)
+                    val candPubHex = byteArrayToHexString(candPub).lowercase()
+                    val candScript = "20${candPubHex}ac"
+                    val candAddr = KaspaCrypto.encodeKaspaAddress(prefix, 0.toByte(), candPub).lowercase()
+
+                    accountKeyMap[candScript] = candPriv
+                    accountKeyMap[candPubHex] = candPriv
+                    accountKeyMap[candAddr] = candPriv
+
+                    if (candScript == cleanScript || candPubHex == pubHex) {
+                        return candPriv
+                    }
+                }
+            }
+        }
+
+        throw IllegalStateException("Private key not found for UTXO script: $cleanScript. Please verify your seed phrase / password.")
     }
 
     /**
@@ -567,13 +643,16 @@ object KaspaSigner {
             for (i in sanitizedInputs.indices) {
                 val utxo = sanitizedInputs[i]
                 val cleanScript = utxo.scriptPublicKey.lowercase().trim()
-                val pubHex = cleanScript.removePrefix("20").removePrefix("21").removePrefix("aa20").removeSuffix("ac").removeSuffix("87")
 
-                // Find exact private key for this UTXO from receive (0/0..99) or change (1/0..99)
-                val privKey = accountKeyMap[cleanScript]
-                    ?: accountKeyMap[pubHex]
-                    ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
-                    ?: throw IllegalStateException("Private key not found for UTXO script: $cleanScript")
+                // Find exact private key for this UTXO from pre-derived map or dynamic scan
+                val privKey = findPrivateKeyForScript(
+                    seed = seed,
+                    accountIndex = accountIndex,
+                    cleanScript = cleanScript,
+                    accountKeyMap = accountKeyMap,
+                    defaultPrivKey = defaultPrivKey,
+                    network = network
+                )
 
                 // Compute real Kaspa consensus Blake2b sighash
                 val sighash = computeKaspaSighash(
@@ -655,7 +734,7 @@ object KaspaSigner {
         changeAddress: String,
         network: KaspaNetwork
     ): Pair<String, String> {
-        val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 30, network = network)
+        val accountKeyMap = deriveAccountKeyMap(seed, accountIndex, gapLimit = 100, network = network)
         val defaultPrivKey = derivePrivateKey(seed, accountIndex, branch = 0, addressIndex = 0)
         try {
             val totalPayment = recipients.sumOf { it.second }
@@ -683,9 +762,14 @@ object KaspaSigner {
                 val utxo = inputs[i]
                 val effectiveScript = if (utxo.scriptPublicKey.isNotBlank()) utxo.scriptPublicKey else addressToScriptPublicKey(changeAddress)
                 val cleanScript = effectiveScript.lowercase().trim()
-                val privKey = accountKeyMap[cleanScript]
-                    ?: accountKeyMap[cleanScript.removePrefix("20").removeSuffix("ac")]
-                    ?: defaultPrivKey
+                val privKey = findPrivateKeyForScript(
+                    seed = seed,
+                    accountIndex = accountIndex,
+                    cleanScript = cleanScript,
+                    accountKeyMap = accountKeyMap,
+                    defaultPrivKey = defaultPrivKey,
+                    network = network
+                )
 
                 val sighash = computeKaspaSighash(
                     txVersion = 0,
