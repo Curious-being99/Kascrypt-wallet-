@@ -27,8 +27,10 @@ class KaspaApiClient {
         .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
         .addInterceptor { chain ->
             val request = chain.request().newBuilder()
-                .header("User-Agent", "KaspaWallet/1.0 (Android; QUIC/Cronet-Engine)")
-                .header("Accept", "application/json")
+                .header("User-Agent", "kaspad:2.1.0 (rusty-kaspa; android-client)")
+                .header("Accept", "application/json, application/x-borsh")
+                .header("X-Kaspa-Protocol", "11")
+                .header("X-Client-Version", "rusty-kaspad/2.1.0")
                 .build()
             chain.proceed(request)
         }
@@ -204,7 +206,7 @@ class KaspaApiClient {
 
     private fun fetchLiveNodeStatus(baseUrl: String): LiveNodeStatus {
         var peers = 0
-        var version = "v2.0.1 (Rusty Kaspa)"
+        var version = "v2.1.0 (Rusty Kaspad)"
         var synced = false
 
         // 1. Query /info/health for cluster node servers & status
@@ -227,7 +229,7 @@ class KaspaApiClient {
                         val firstServer = serversArray.getJSONObject(0)
                         val ver = firstServer.optString("serverVersion", "")
                         if (ver.isNotEmpty()) {
-                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspa)"
+                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspad)"
                         }
                     } else {
                         if (peers == 0) peers = 1
@@ -248,7 +250,7 @@ class KaspaApiClient {
                         synced = json.optBoolean("isSynced", true)
                         val ver = json.optString("serverVersion", json.optString("version", ""))
                         if (ver.isNotEmpty()) {
-                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspa)"
+                            version = if (ver.startsWith("v")) ver else "v$ver (Rusty Kaspad)"
                         }
                         if (peers == 0) {
                             peers = json.optInt("p2pConnections", json.optInt("peersCount", 1))
@@ -503,7 +505,7 @@ class KaspaApiClient {
         null
     }
 
-    suspend fun fetchAddressUtxos(address: String, network: KaspaNetwork): List<UtxoEntry> = withContext(Dispatchers.IO) {
+    suspend fun fetchAddressUtxosDetailed(address: String, network: KaspaNetwork): Pair<Boolean, List<UtxoEntry>> = withContext(Dispatchers.IO) {
         val candidateUrls = getCandidateBaseUrls(network)
         val result = mutableListOf<UtxoEntry>()
         for (baseUrl in candidateUrls) {
@@ -549,14 +551,18 @@ class KaspaApiClient {
                                 )
                             )
                         }
-                        return@withContext result
+                        return@withContext Pair(true, result)
                     }
                 }
             } catch (e: Exception) {
                 Log.d("KaspaApiClient", "UTXOs check candidate $baseUrl unfulfilled for $address: ${e.message}")
             }
         }
-        result
+        Pair(false, result)
+    }
+
+    suspend fun fetchAddressUtxos(address: String, network: KaspaNetwork): List<UtxoEntry> {
+        return fetchAddressUtxosDetailed(address, network).second
     }
 
     suspend fun fetchAddressTransactions(

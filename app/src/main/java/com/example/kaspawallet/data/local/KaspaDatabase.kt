@@ -13,9 +13,10 @@ import com.example.kaspawallet.data.model.*
         WalletEntity::class,
         AccountEntity::class,
         TransactionEntity::class,
-        ContactEntity::class
+        ContactEntity::class,
+        UtxoEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class KaspaDatabase : RoomDatabase() {
@@ -23,6 +24,7 @@ abstract class KaspaDatabase : RoomDatabase() {
     abstract fun accountDao(): AccountDao
     abstract fun transactionDao(): TransactionDao
     abstract fun contactDao(): ContactDao
+    abstract fun utxoDao(): UtxoDao
 
     companion object {
         @Volatile
@@ -34,6 +36,26 @@ abstract class KaspaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS utxos (
+                        accountId TEXT NOT NULL,
+                        outpointTxId TEXT NOT NULL,
+                        outpointIndex INTEGER NOT NULL,
+                        amountSompi INTEGER NOT NULL,
+                        scriptPublicKey TEXT NOT NULL,
+                        blockDaaScore INTEGER NOT NULL,
+                        isCoinbase INTEGER NOT NULL,
+                        address TEXT NOT NULL DEFAULT '',
+                        isSpent INTEGER NOT NULL DEFAULT 0,
+                        updatedAt INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(accountId, outpointTxId, outpointIndex)
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getDatabase(context: Context): KaspaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -41,7 +63,7 @@ abstract class KaspaDatabase : RoomDatabase() {
                     KaspaDatabase::class.java,
                     "kaspa_wallet.db"
                 )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .fallbackToDestructiveMigration()
                 .allowMainThreadQueries()
                 .build()

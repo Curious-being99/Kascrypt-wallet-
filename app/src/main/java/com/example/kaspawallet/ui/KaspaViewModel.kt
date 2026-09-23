@@ -1,5 +1,6 @@
 package com.example.kaspawallet.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -39,7 +40,11 @@ data class PendingTxDetails(
     val timestamp: Long = System.currentTimeMillis(),
     val status: TxExecutionStatus = TxExecutionStatus.PENDING,
     val errorMessage: String? = null,
-    val confirmedTx: TransactionEntity? = null
+    val confirmedTx: TransactionEntity? = null,
+    val mempoolSeconds: Int = 0,
+    val mempoolStage: String = "Broadcasting to Kaspa P2P network...",
+    val isMempoolAccepted: Boolean = false,
+    val blockDaaScore: Long = 0L
 )
 
 data class WalletUiState(
@@ -276,9 +281,20 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
     private fun updateAccountUtxos(accountId: String) {
         utxosJob?.cancel()
         utxosJob = viewModelScope.launch {
+            try {
+                val cached = repository.database.utxoDao().getUnspentUtxosForAccountSync(accountId).map { it.toUtxoEntry() }
+                if (cached.isNotEmpty()) {
+                    _uiState.update { it.copy(utxos = cached) }
+                }
+            } catch (e: Exception) {
+                Log.d("KaspaViewModel", "Cached UTXOs load note: ${e.message}")
+            }
+
             repository.accountUtxos.collect { map ->
-                val list = map[accountId] ?: emptyList()
-                _uiState.update { it.copy(utxos = list) }
+                val list = map[accountId]
+                if (list != null) {
+                    _uiState.update { it.copy(utxos = list) }
+                }
             }
         }
     }
@@ -906,17 +922,82 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                     explicitPassword = explicitPassword,
                     explicitWords = explicitWords
                 )
+
+                // Transaction is now broadcast and accepted into Kaspa node's mempool
                 _uiState.update { current ->
                     current.copy(
                         isLoading = false,
                         activePendingTx = current.activePendingTx?.copy(
                             txId = sentTx.id,
-                            status = TxExecutionStatus.SUCCESSFUL,
+                            status = TxExecutionStatus.PENDING,
+                            mempoolSeconds = 0,
+                            mempoolStage = "Accepted in Mempool • Propagating to DAG miners",
+                            isMempoolAccepted = true,
                             confirmedTx = sentTx
                         ),
-                        lastSentTx = sentTx,
-                        statusMessage = "Sent ${KaspaUtils.formatKas(amountKas)} successfully"
+                        lastSentTx = sentTx
                     )
+                }
+
+                // Count live seconds in mempool and check node for BlockDAG inclusion
+                var elapsedSeconds = 0
+                var isConfirmedOnChain = false
+                var finalDaaScore = sentTx.daaScore
+
+                while (elapsedSeconds < 15 && !isConfirmedOnChain) {
+                    kotlinx.coroutines.delay(1000)
+                    elapsedSeconds++
+
+                    _uiState.update { current ->
+                        val active = current.activePendingTx
+                        if (active != null && active.txId == sentTx.id && active.status == TxExecutionStatus.PENDING) {
+                            current.copy(
+                                activePendingTx = active.copy(
+                                    mempoolSeconds = elapsedSeconds,
+                                    mempoolStage = if (elapsedSeconds <= 2) {
+                                        "In Mempool (${elapsedSeconds}s) • Propagating to DAG nodes"
+                                    } else {
+                                        "In Mempool (${elapsedSeconds}s) • Mining into BlockDAG..."
+                                    }
+                                )
+                            )
+                        } else {
+                            current
+                        }
+                    }
+
+                    // Query node for block inclusion
+                    val (accepted, daa) = repository.checkTransactionAccepted(sentTx.id, currentNetwork)
+                    if (accepted) {
+                        isConfirmedOnChain = true
+                        if (daa > 0) finalDaaScore = daa
+                        break
+                    }
+                }
+
+                val finalConfirmedTx = sentTx.copy(
+                    status = TransactionStatus.CONFIRMED,
+                    daaScore = if (finalDaaScore > 0) finalDaaScore else sentTx.daaScore
+                )
+                repository.database.transactionDao().insertTransaction(finalConfirmedTx)
+
+                _uiState.update { current ->
+                    val active = current.activePendingTx
+                    if (active != null && active.txId == sentTx.id) {
+                        current.copy(
+                            activePendingTx = active.copy(
+                                status = TxExecutionStatus.SUCCESSFUL,
+                                mempoolSeconds = elapsedSeconds,
+                                mempoolStage = "Confirmed in BlockDAG",
+                                blockDaaScore = finalDaaScore,
+                                confirmedTx = finalConfirmedTx
+                            ),
+                            lastSentTx = finalConfirmedTx,
+                            statusMessage = "Sent ${KaspaUtils.formatKas(amountKas)} successfully"
+                        )
+                    } else {
+                        current
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update { current ->
@@ -957,7 +1038,10 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
             timestamp = System.currentTimeMillis(),
             status = TxExecutionStatus.PENDING,
             errorMessage = null,
-            confirmedTx = null
+            confirmedTx = null,
+            mempoolSeconds = 0,
+            mempoolStage = "Broadcasting transfer to Kaspa network...",
+            isMempoolAccepted = false
         )
 
         _uiState.update {
@@ -977,12 +1061,69 @@ class KaspaViewModel(val repository: KaspaWalletRepository) : ViewModel() {
                         isLoading = false,
                         activePendingTx = current.activePendingTx?.copy(
                             txId = sentTx.id,
-                            status = TxExecutionStatus.SUCCESSFUL,
+                            status = TxExecutionStatus.PENDING,
+                            mempoolSeconds = 0,
+                            mempoolStage = "Accepted in Mempool • Confirming...",
+                            isMempoolAccepted = true,
                             confirmedTx = sentTx
                         ),
-                        lastSentTx = sentTx,
-                        statusMessage = "Transferred ${KaspaUtils.formatKas(amountKas)} to ${targetAccount.name}"
+                        lastSentTx = sentTx
                     )
+                }
+
+                var elapsedSeconds = 0
+                var isConfirmedOnChain = false
+                var finalDaaScore = sentTx.daaScore
+
+                while (elapsedSeconds < 10 && !isConfirmedOnChain) {
+                    kotlinx.coroutines.delay(1000)
+                    elapsedSeconds++
+
+                    _uiState.update { current ->
+                        val active = current.activePendingTx
+                        if (active != null && active.txId == sentTx.id && active.status == TxExecutionStatus.PENDING) {
+                            current.copy(
+                                activePendingTx = active.copy(
+                                    mempoolSeconds = elapsedSeconds,
+                                    mempoolStage = "In Mempool (${elapsedSeconds}s) • Confirming in BlockDAG..."
+                                )
+                            )
+                        } else {
+                            current
+                        }
+                    }
+
+                    val (accepted, daa) = repository.checkTransactionAccepted(sentTx.id, currentNetwork)
+                    if (accepted) {
+                        isConfirmedOnChain = true
+                        if (daa > 0) finalDaaScore = daa
+                        break
+                    }
+                }
+
+                val finalConfirmedTx = sentTx.copy(
+                    status = TransactionStatus.CONFIRMED,
+                    daaScore = if (finalDaaScore > 0) finalDaaScore else sentTx.daaScore
+                )
+                repository.database.transactionDao().insertTransaction(finalConfirmedTx)
+
+                _uiState.update { current ->
+                    val active = current.activePendingTx
+                    if (active != null && active.txId == sentTx.id) {
+                        current.copy(
+                            activePendingTx = active.copy(
+                                status = TxExecutionStatus.SUCCESSFUL,
+                                mempoolSeconds = elapsedSeconds,
+                                mempoolStage = "Confirmed in BlockDAG",
+                                blockDaaScore = finalDaaScore,
+                                confirmedTx = finalConfirmedTx
+                            ),
+                            lastSentTx = finalConfirmedTx,
+                            statusMessage = "Transferred ${KaspaUtils.formatKas(amountKas)} to ${targetAccount.name}"
+                        )
+                    } else {
+                        current
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update { current ->

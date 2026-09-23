@@ -662,19 +662,9 @@ fun SendKasDialog(
                         disabledContentColor = KaspaTextMuted
                     )
                 ) {
-                    if (state.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            color = Color(0xFF003731),
-                            strokeWidth = 2.5.dp
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text("Signing & Broadcasting...", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    } else {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Broadcast Transaction", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    }
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Broadcast Transaction", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(modifier = Modifier.height(40.dp))
@@ -765,17 +755,7 @@ fun SendKasDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = KaspaPrimary, contentColor = Color(0xFF003731)),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    if (state.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = Color(0xFF003731),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Signing...", fontWeight = FontWeight.Bold)
-                    } else {
-                        Text("Confirm & Send", fontWeight = FontWeight.Bold)
-                    }
+                    Text("Confirm & Send", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

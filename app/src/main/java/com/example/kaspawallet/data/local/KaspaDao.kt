@@ -33,6 +33,9 @@ interface AccountDao {
     @Query("SELECT * FROM accounts WHERE walletId = :walletId ORDER BY accountIndex ASC")
     fun getAccountsForWalletSync(walletId: String): List<AccountEntity>
 
+    @Query("SELECT * FROM accounts")
+    fun getAllAccountsSync(): List<AccountEntity>
+
     @Query("SELECT * FROM accounts WHERE id = :accountId LIMIT 1")
     fun getAccountById(accountId: String): AccountEntity?
 
@@ -80,4 +83,31 @@ interface ContactDao {
 
     @Delete
     fun deleteContact(contact: ContactEntity): Int
+}
+
+@Dao
+interface UtxoDao {
+    @Query("SELECT * FROM utxos WHERE accountId = :accountId AND isSpent = 0 ORDER BY amountSompi DESC")
+    fun getUnspentUtxosForAccount(accountId: String): Flow<List<UtxoEntity>>
+
+    @Query("SELECT * FROM utxos WHERE accountId = :accountId AND isSpent = 0 ORDER BY amountSompi DESC")
+    fun getUnspentUtxosForAccountSync(accountId: String): List<UtxoEntity>
+
+    @Query("SELECT * FROM utxos WHERE accountId = :accountId ORDER BY amountSompi DESC")
+    fun getAllUtxosForAccount(accountId: String): Flow<List<UtxoEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertUtxos(utxos: List<UtxoEntity>)
+
+    @Query("UPDATE utxos SET isSpent = 1, updatedAt = :timestamp WHERE accountId = :accountId AND outpointTxId = :txId AND outpointIndex = :index")
+    fun markSpent(accountId: String, txId: String, index: Int, timestamp: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM utxos WHERE accountId = :accountId AND outpointTxId = :txId AND outpointIndex = :index")
+    fun deleteUtxo(accountId: String, txId: String, index: Int)
+
+    @Query("DELETE FROM utxos WHERE accountId = :accountId AND isSpent = 1")
+    fun deleteSpentForAccount(accountId: String)
+
+    @Query("DELETE FROM utxos WHERE accountId = :accountId")
+    fun deleteAllForAccount(accountId: String)
 }

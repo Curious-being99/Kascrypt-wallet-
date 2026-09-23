@@ -406,8 +406,8 @@ fun SettingsTab(
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("KASCRYPT Wallet", color = KaspaTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("Version 1.0.0 • KASCRYPT Core", color = KaspaTextSecondary, fontSize = 12.sp)
-                    Text("Consensus: GHOSTDAG (PoW BlockDAG)", color = KaspaTextMuted, fontSize = 11.sp)
+                    Text("Version 2.1.0 • Powered by Rusty Kaspad Engine", color = KaspaPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Consensus: GHOSTDAG (PoW BlockDAG) • Protocol v11", color = KaspaTextMuted, fontSize = 11.sp)
                 }
             }
         }

@@ -91,6 +91,39 @@ class KaspaWalletRepository(
     }
 
     init {
+        // Pre-load all saved UTXOs from Room database into memory immediately
+        repositoryScope.launch(Dispatchers.IO) {
+            try {
+                val accounts = database.accountDao().getAllAccountsSync()
+                val map = mutableMapOf<String, List<UtxoEntry>>()
+                for (acc in accounts) {
+                    val list = database.utxoDao().getUnspentUtxosForAccountSync(acc.id).map { it.toUtxoEntry() }
+                    if (list.isNotEmpty()) {
+                        map[acc.id] = list
+                    }
+                }
+                if (map.isNotEmpty()) {
+                    _accountUtxos.update { current -> map + current }
+                }
+            } catch (e: Exception) {
+                Log.d("KaspaWalletRepository", "Preload UTXOs note: ${e.message}")
+            }
+        }
+
+        // Keep _accountUtxos reactive to database changes for active account
+        repositoryScope.launch {
+            _activeAccountId.filterNotNull().collectLatest { accId ->
+                database.utxoDao().getUnspentUtxosForAccount(accId).collect { entities ->
+                    val entries = entities.map { it.toUtxoEntry() }
+                    if (entries.isNotEmpty()) {
+                        _accountUtxos.update { current ->
+                            current + (accId to entries)
+                        }
+                    }
+                }
+            }
+        }
+
         // Start background live sync for BlockDAG metrics and Market Price
         startPeriodicSync()
     }
@@ -194,12 +227,29 @@ class KaspaWalletRepository(
         val account = database.accountDao().getAccountById(accountId) ?: return@withContext
         val network = _currentNetwork.value
         val primaryAddress = KaspaUtils.formatAddressForNetwork(account.address, network)
+
+        // Load locally cached unspent UTXOs from Room database first
+        val cachedEntities = database.utxoDao().getUnspentUtxosForAccountSync(accountId)
+        val cachedUtxos = cachedEntities.map { it.toUtxoEntry() }
         val allDiscoveredUtxos = mutableListOf<UtxoEntry>()
 
         // 1. Fetch live UTXOs & real balance from primary address
-        val primaryUtxos = apiClient.fetchAddressUtxos(primaryAddress, network)
-        allDiscoveredUtxos.addAll(primaryUtxos)
+        val (primarySuccess, primaryUtxos) = apiClient.fetchAddressUtxosDetailed(primaryAddress, network)
         val primaryBal = apiClient.fetchAddressBalance(primaryAddress, network)
+
+        if (primarySuccess) {
+            allDiscoveredUtxos.addAll(primaryUtxos)
+            // If primaryUtxos is empty but primaryBal > 0, node indexer is lagging for /utxos.
+            // Do NOT discard our valid known UTXOs!
+            if (primaryUtxos.isEmpty() && (primaryBal ?: 0L) > 0L && cachedUtxos.isNotEmpty()) {
+                Log.d("KaspaWalletRepository", "Node balance is positive ($primaryBal) but utxos returned 0. Retaining cached UTXOs.")
+                allDiscoveredUtxos.addAll(cachedUtxos)
+            }
+        } else {
+            // Network request failed or device is offline: NEVER wipe UTXOs! Retain cached UTXOs
+            Log.d("KaspaWalletRepository", "Failed to fetch live UTXOs from network, retaining ${cachedUtxos.size} cached UTXOs.")
+            allDiscoveredUtxos.addAll(cachedUtxos)
+        }
 
         // Derive known account addresses to correctly categorize SEND vs RECEIVE transactions
         val wallet = database.walletDao().getWalletById(account.walletId)
@@ -230,66 +280,34 @@ class KaspaWalletRepository(
             }
         }
 
-        // 3. Scan & Auto-recover funds sitting on secondary address indices (up to 30 limit)
-        var totalSecondarySompi = 0L
+        // 3. Scan funds sitting on secondary address indices (up to 30 limit) and add to unspent UTXOs
         try {
-            val wallet = database.walletDao().getWalletById(account.walletId)
-            val words = getWalletMnemonicWords(wallet)
-            val passphrase = getWalletPassphrase(wallet)
             if (words.isNotEmpty()) {
-                val seed = getWalletSeed(wallet)
-                try {
-                    val gapLimit = 30
-                    val branchesToScan = listOf(
-                        0 to (1 until gapLimit).toList(), // m/44'/111111'/0'/0/1..29
-                        1 to (0 until gapLimit).toList()  // m/44'/111111'/0'/1/0..29
-                    )
+                val gapLimit = 30
+                val branchesToScan = listOf(
+                    0 to (1 until gapLimit).toList(), // m/44'/111111'/0'/0/1..29
+                    1 to (0 until gapLimit).toList()  // m/44'/111111'/0'/1/0..29
+                )
 
-                    for ((branch, indices) in branchesToScan) {
-                        for (addrIdx in indices) {
-                            val derivedAddr = if (branch == 0) {
-                                KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network, passphrase)
-                            } else {
-                                KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network, passphrase)
-                            }
+                for ((branch, indices) in branchesToScan) {
+                    for (addrIdx in indices) {
+                        val derivedAddr = if (branch == 0) {
+                            KaspaCrypto.deriveKaspaAddress(words, account.accountIndex, addrIdx, network, passphrase)
+                        } else {
+                            KaspaCrypto.deriveKaspaChangeAddress(words, account.accountIndex, addrIdx, network, passphrase)
+                        }
 
-                            if (derivedAddr.isNotBlank() && derivedAddr != account.address && derivedAddr != primaryAddress) {
-                                val utxos = apiClient.fetchAddressUtxos(derivedAddr, network)
-                                if (utxos.isNotEmpty()) {
-                                    allDiscoveredUtxos.addAll(utxos)
-                                    val totalSompi = utxos.sumOf { it.amountSompi }
-                                    totalSecondarySompi += totalSompi
-                                    val mass = KaspaSigner.calculateTransactionMass(utxos.size, 1)
-                                    val feeSompi = KaspaSigner.calculateMinimumFeeSompi(mass)
-                                    if (totalSompi > feeSompi) {
-                                        val sweepAmount = totalSompi - feeSompi
-                                        val (signedSweepTx, sweepTxId) = KaspaSigner.createAndSignTransaction(
-                                            seed = seed,
-                                            accountIndex = account.accountIndex,
-                                            inputs = utxos,
-                                            recipientAddress = account.address,
-                                            amountSompi = sweepAmount,
-                                            feeSompi = feeSompi,
-                                            changeAddress = account.address,
-                                            network = network,
-                                            inputBranch = branch,
-                                            inputAddressIndex = addrIdx
-                                        )
-                                        val (sweepOk, _) = apiClient.broadcastTransaction(signedSweepTx, network)
-                                        if (sweepOk) {
-                                            Log.i("KaspaWalletRepository", "Swept funds from $derivedAddr (branch $branch idx $addrIdx) to primary: $sweepTxId")
-                                        }
-                                    }
-                                }
+                        if (derivedAddr.isNotBlank() && derivedAddr != account.address && derivedAddr != primaryAddress) {
+                            val (secSuccess, secUtxos) = apiClient.fetchAddressUtxosDetailed(derivedAddr, network)
+                            if (secSuccess && secUtxos.isNotEmpty()) {
+                                allDiscoveredUtxos.addAll(secUtxos)
                             }
                         }
                     }
-                } finally {
-                    seed.fill(0)
                 }
             }
         } catch (e: Exception) {
-            Log.d("KaspaWalletRepository", "Multi-index auto-recovery check: ${e.message}")
+            Log.d("KaspaWalletRepository", "Multi-index check: ${e.message}")
         }
 
         // 4. Update confirmed balance and UTXO pool
@@ -328,10 +346,40 @@ class KaspaWalletRepository(
         val hasPendingLocalOps = pendingSpentOutpoints.isNotEmpty() || (pendingChangeUtxos[accountId]?.isNotEmpty() == true)
         val finalBalance = if (hasPendingLocalOps) utxoSum else maxOf(primaryBal ?: 0L, utxoSum)
 
-        database.accountDao().updateBalance(accountId, finalBalance)
+        // Only update account balance if we have a valid non-zero balance or confirmed zero via successful API call
+        if (distinctUtxos.isNotEmpty() || (primarySuccess && (primaryBal ?: 0L) == 0L)) {
+            database.accountDao().updateBalance(accountId, finalBalance)
+        }
+
+        // Persist distinctUtxos to Room database
+        if (distinctUtxos.isNotEmpty()) {
+            val entitiesToSave = distinctUtxos.map { it.toEntity(accountId, account.address) }
+            database.utxoDao().insertUtxos(entitiesToSave)
+
+            // Clean up any UTXOs in Room that are no longer unspent if primary network query succeeded
+            if (primarySuccess) {
+                val currentKeys = distinctUtxos.map { "${it.outpointTxId}:${it.outpointIndex}" }.toSet()
+                for (cached in cachedEntities) {
+                    val key = "${cached.outpointTxId}:${cached.outpointIndex}"
+                    if (key !in currentKeys && !pendingChangeUtxos[accountId].orEmpty().any { "${it.outpointTxId}:${it.outpointIndex}" == key }) {
+                        database.utxoDao().deleteUtxo(accountId, cached.outpointTxId, cached.outpointIndex)
+                    }
+                }
+            }
+        } else if (primarySuccess && (primaryBal ?: 0L) == 0L && pendingSpentOutpoints.isEmpty() && pendingChangeUtxos[accountId].isNullOrEmpty()) {
+            database.utxoDao().deleteAllForAccount(accountId)
+        }
+
+        val finalList = if (distinctUtxos.isNotEmpty()) {
+            distinctUtxos
+        } else if (cachedUtxos.isNotEmpty() && !primarySuccess) {
+            cachedUtxos
+        } else {
+            distinctUtxos
+        }
 
         _accountUtxos.update { current ->
-            current + (accountId to distinctUtxos)
+            current + (accountId to finalList)
         }
     }
 
@@ -497,6 +545,26 @@ class KaspaWalletRepository(
                 }
                 syncAccountOnChain(accountId)
             }
+        }
+    }
+
+    suspend fun checkTransactionAccepted(txId: String, network: KaspaNetwork): Pair<Boolean, Long> {
+        return try {
+            val txInfo = apiClient.fetchTransaction(txId, network)
+            if (txInfo != null) {
+                val isAccepted = txInfo.optBoolean("is_accepted", false) ||
+                        txInfo.has("block_time") ||
+                        (txInfo.optLong("block_daa_score", 0L) > 0L) ||
+                        (txInfo.optLong("accepting_block_blue_score", 0L) > 0L)
+                val daa = txInfo.optLong("block_daa_score", 0L).takeIf { it > 0 }
+                    ?: txInfo.optLong("accepting_block_blue_score", 0L).takeIf { it > 0 }
+                    ?: 0L
+                Pair(isAccepted, daa)
+            } else {
+                Pair(false, 0L)
+            }
+        } catch (e: Exception) {
+            Pair(false, 0L)
         }
     }
 
@@ -701,10 +769,15 @@ class KaspaWalletRepository(
             // Change output returns directly to the sender's account address
             val changeAddress = senderAccount.address
 
-            // Always fetch live UTXOs directly from the Kaspa network to guarantee we only spend active, valid on-chain UTXOs
+            // Always fetch live UTXOs directly from the Kaspa network, with Room database fallback if offline/lagging
             val livePrimary = apiClient.fetchAddressUtxos(senderAccount.address, _currentNetwork.value)
             val availableUtxos = mutableListOf<UtxoEntry>()
-            availableUtxos.addAll(livePrimary)
+            if (livePrimary.isNotEmpty()) {
+                availableUtxos.addAll(livePrimary)
+            } else {
+                val cached = database.utxoDao().getUnspentUtxosForAccountSync(senderAccount.id).map { it.toUtxoEntry() }
+                availableUtxos.addAll(cached)
+            }
 
             // If primary address UTXOs are insufficient, check change & secondary address indices live directly from network
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
@@ -802,6 +875,7 @@ class KaspaWalletRepository(
             val now = System.currentTimeMillis()
             for (u in selectedUtxos) {
                 pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+                database.utxoDao().markSpent(senderAccount.id, u.outpointTxId, u.outpointIndex, now)
             }
 
             val totalInputSompi = selectedUtxos.sumOf { it.amountSompi }
@@ -824,6 +898,7 @@ class KaspaWalletRepository(
                     existing.removeAll { it.outpointTxId == finalTxId }
                     existing.add(changeUtxo)
                 }
+                database.utxoDao().insertUtxos(listOf(changeUtxo.toEntity(senderAccount.id, changeAddress)))
             }
 
             val newSenderBalance = maxOf(0L, senderAccount.balanceSompi - totalDebit)
@@ -912,7 +987,12 @@ class KaspaWalletRepository(
             val changeAddress = senderAccount.address
             val livePrimary = apiClient.fetchAddressUtxos(senderAccount.address, _currentNetwork.value)
             val availableUtxos = mutableListOf<UtxoEntry>()
-            availableUtxos.addAll(livePrimary)
+            if (livePrimary.isNotEmpty()) {
+                availableUtxos.addAll(livePrimary)
+            } else {
+                val cached = database.utxoDao().getUnspentUtxosForAccountSync(senderAccount.id).map { it.toUtxoEntry() }
+                availableUtxos.addAll(cached)
+            }
 
             if (availableUtxos.sumOf { it.amountSompi } < totalDebit && words.isNotEmpty()) {
                 for (branch in listOf(1, 0)) {
@@ -981,6 +1061,7 @@ class KaspaWalletRepository(
             val now = System.currentTimeMillis()
             for (u in selected) {
                 pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+                database.utxoDao().markSpent(senderAccount.id, u.outpointTxId, u.outpointIndex, now)
             }
 
             val totalInputSompi = selected.sumOf { it.amountSompi }
@@ -1003,6 +1084,7 @@ class KaspaWalletRepository(
                     existing.removeAll { it.outpointTxId == finalTxId }
                     existing.add(changeUtxo)
                 }
+                database.utxoDao().insertUtxos(listOf(changeUtxo.toEntity(senderAccount.id, changeAddress)))
             }
 
             val newSenderBalance = maxOf(0L, senderAccount.balanceSompi - totalDebit)
@@ -1041,10 +1123,15 @@ class KaspaWalletRepository(
 
     suspend fun compoundAccountUtxos(account: AccountEntity): TransactionEntity = withContext(Dispatchers.IO) {
         val liveUtxos = apiClient.fetchAddressUtxos(account.address, _currentNetwork.value)
-        if (liveUtxos.isEmpty()) {
+        val utxosPool = if (liveUtxos.isNotEmpty()) {
+            liveUtxos
+        } else {
+            database.utxoDao().getUnspentUtxosForAccountSync(account.id).map { it.toUtxoEntry() }
+        }
+        if (utxosPool.isEmpty()) {
             throw IllegalStateException("No unspent outputs (UTXOs) available to compound for address ${KaspaUtils.truncateAddress(account.address)}")
         }
-        if (liveUtxos.size <= 1) {
+        if (utxosPool.size <= 1) {
             throw IllegalStateException("UTXOs are already consolidated for address ${KaspaUtils.truncateAddress(account.address)}")
         }
 
@@ -1056,7 +1143,7 @@ class KaspaWalletRepository(
         }
         val seed = getWalletSeed(wallet)
         // Cap compounding inputs to 80 to guarantee transaction mass stays below standard node mempool limits
-        val utxosToCompound = liveUtxos.take(80)
+        val utxosToCompound = utxosPool.take(80)
 
         val totalInput = utxosToCompound.sumOf { it.amountSompi }
         val mass = KaspaSigner.calculateTransactionMass(utxosToCompound.size, 1)
@@ -1095,6 +1182,7 @@ class KaspaWalletRepository(
         val now = System.currentTimeMillis()
         for (u in utxosToCompound) {
             pendingSpentOutpoints["${u.outpointTxId}:${u.outpointIndex}"] = now
+            database.utxoDao().markSpent(account.id, u.outpointTxId, u.outpointIndex, now)
         }
 
         val compoundUtxo = UtxoEntry(
@@ -1110,6 +1198,7 @@ class KaspaWalletRepository(
             existing.removeAll { it.outpointTxId == finalTxId }
             existing.add(compoundUtxo)
         }
+        database.utxoDao().insertUtxos(listOf(compoundUtxo.toEntity(account.id, account.address)))
 
         database.accountDao().updateBalance(account.id, totalAmount)
 

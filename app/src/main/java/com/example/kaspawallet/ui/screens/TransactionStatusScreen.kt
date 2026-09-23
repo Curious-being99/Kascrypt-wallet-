@@ -153,8 +153,13 @@ fun TransactionStatusScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
+                            val title = if (pendingTx.isMempoolAccepted) {
+                                "Transaction in Mempool"
+                            } else {
+                                "Broadcasting Transaction"
+                            }
                             Text(
-                                text = "Broadcasting Transaction",
+                                text = title,
                                 color = KaspaTextPrimary,
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.Bold,
@@ -162,32 +167,39 @@ fun TransactionStatusScreen(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Submitting to Kaspa BlockDAG consensus nodes...",
+                                text = pendingTx.mempoolStage,
                                 color = KaspaTextSecondary,
                                 fontSize = 13.sp,
-                                textAlign = TextAlign.Center
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
                             )
                             Spacer(modifier = Modifier.height(12.dp))
+
+                            val min = pendingTx.mempoolSeconds / 60
+                            val sec = pendingTx.mempoolSeconds % 60
+                            val timerText = String.format("%02d:%02d", min, sec)
+
                             Surface(
                                 color = KaspaPrimary.copy(alpha = 0.12f),
                                 shape = RoundedCornerShape(20.dp),
-                                border = BorderStroke(1.dp, KaspaPrimary.copy(alpha = 0.3f))
+                                border = BorderStroke(1.dp, KaspaPrimary.copy(alpha = 0.35f))
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                                 ) {
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(10.dp),
+                                        modifier = Modifier.size(11.dp),
                                         color = KaspaPrimary,
-                                        strokeWidth = 1.8.dp
+                                        strokeWidth = 2.dp
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "PENDING ON-CHAIN CONFIRMATION",
+                                        text = if (pendingTx.isMempoolAccepted) "MEMPOOL TIME: ${timerText}s" else "CONNECTING TO PEERS",
                                         color = KaspaPrimary,
                                         fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                 }
                             }
@@ -210,15 +222,20 @@ fun TransactionStatusScreen(
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "Transaction Successful!",
+                                text = "Transaction Confirmed!",
                                 color = KaspaTextPrimary,
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.Bold,
                                 textAlign = TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(6.dp))
+                            val confirmationDesc = if (pendingTx.mempoolSeconds > 0) {
+                                "Included in Kaspa BlockDAG after ${pendingTx.mempoolSeconds}s in mempool."
+                            } else {
+                                "Broadcast accepted and recorded on the Kaspa BlockDAG."
+                            }
                             Text(
-                                text = "Broadcast accepted and recorded on the Kaspa BlockDAG.",
+                                text = confirmationDesc,
                                 color = KaspaTextSecondary,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -240,8 +257,15 @@ fun TransactionStatusScreen(
                                             .background(KaspaSuccess)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
+                                    val daaScore = if (pendingTx.blockDaaScore > 0) {
+                                        "DAA #${pendingTx.blockDaaScore}"
+                                    } else if (pendingTx.confirmedTx?.daaScore != null && pendingTx.confirmedTx.daaScore > 0) {
+                                        "DAA #${pendingTx.confirmedTx.daaScore}"
+                                    } else {
+                                        "MINED ON-CHAIN"
+                                    }
                                     Text(
-                                        text = "BROADCAST CONFIRMED",
+                                        text = "CONFIRMED • $daaScore",
                                         color = KaspaSuccess,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -421,6 +445,112 @@ fun TransactionStatusScreen(
                             }
                         }
                     }
+                }
+            }
+
+            // Real-Time Mempool & BlockDAG Tracking Card
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = when (pendingTx.status) {
+                        TxExecutionStatus.SUCCESSFUL -> KaspaSuccess.copy(alpha = 0.06f)
+                        TxExecutionStatus.FAILED -> KaspaError.copy(alpha = 0.06f)
+                        TxExecutionStatus.PENDING -> KaspaSurface
+                    }
+                ),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(
+                    1.dp,
+                    when (pendingTx.status) {
+                        TxExecutionStatus.SUCCESSFUL -> KaspaSuccess.copy(alpha = 0.35f)
+                        TxExecutionStatus.FAILED -> KaspaError.copy(alpha = 0.35f)
+                        TxExecutionStatus.PENDING -> KaspaCardBorder
+                    }
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Timeline,
+                                contentDescription = null,
+                                tint = if (pendingTx.status == TxExecutionStatus.SUCCESSFUL) KaspaSuccess else KaspaPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Mempool & DAG Status",
+                                color = KaspaTextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        val min = pendingTx.mempoolSeconds / 60
+                        val sec = pendingTx.mempoolSeconds % 60
+                        val timerStr = String.format("%02d:%02d", min, sec)
+                        Surface(
+                            color = KaspaSurfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(0.5.dp, KaspaCardBorder)
+                        ) {
+                            Text(
+                                text = "Mempool: ${timerStr}s",
+                                color = if (pendingTx.status == TxExecutionStatus.PENDING) KaspaPrimary else KaspaTextSecondary,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = KaspaCardBorder.copy(alpha = 0.6f))
+
+                    // Step 1: P2P Broadcast
+                    MempoolStepRow(
+                        stepNumber = "1",
+                        title = "P2P Network Broadcast",
+                        subtitle = if (pendingTx.isMempoolAccepted || pendingTx.status == TxExecutionStatus.SUCCESSFUL) "Broadcast accepted by node" else "Connecting to node endpoints...",
+                        isDone = pendingTx.isMempoolAccepted || pendingTx.status == TxExecutionStatus.SUCCESSFUL,
+                        isActive = !pendingTx.isMempoolAccepted && pendingTx.status == TxExecutionStatus.PENDING
+                    )
+
+                    // Step 2: Kaspa Mempool
+                    MempoolStepRow(
+                        stepNumber = "2",
+                        title = "Kaspa Mempool",
+                        subtitle = when {
+                            pendingTx.status == TxExecutionStatus.SUCCESSFUL -> "Accepted and mined from mempool after ${pendingTx.mempoolSeconds}s"
+                            pendingTx.isMempoolAccepted -> "In mempool (${pendingTx.mempoolSeconds}s) • Propagating to DAG"
+                            else -> "Awaiting peer node broadcast"
+                        },
+                        isDone = pendingTx.status == TxExecutionStatus.SUCCESSFUL,
+                        isActive = pendingTx.isMempoolAccepted && pendingTx.status == TxExecutionStatus.PENDING
+                    )
+
+                    // Step 3: BlockDAG Confirmation
+                    MempoolStepRow(
+                        stepNumber = "3",
+                        title = "BlockDAG Confirmation",
+                        subtitle = when {
+                            pendingTx.status == TxExecutionStatus.SUCCESSFUL -> {
+                                val daa = if (pendingTx.blockDaaScore > 0) "#${pendingTx.blockDaaScore}" else (pendingTx.confirmedTx?.daaScore?.let { "#$it" } ?: "Confirmed")
+                                "Mined into BlockDAG (DAA $daa)"
+                            }
+                            pendingTx.status == TxExecutionStatus.FAILED -> "Rejected by network"
+                            else -> "Awaiting block creation (~1 BPS)"
+                        },
+                        isDone = pendingTx.status == TxExecutionStatus.SUCCESSFUL,
+                        isActive = false
+                    )
                 }
             }
 
@@ -778,6 +908,74 @@ fun TransactionStatusScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MempoolStepRow(
+    stepNumber: String,
+    title: String,
+    subtitle: String,
+    isDone: Boolean,
+    isActive: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        isDone -> KaspaSuccess.copy(alpha = 0.2f)
+                        isActive -> KaspaPrimary.copy(alpha = 0.2f)
+                        else -> KaspaSurfaceVariant
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isDone) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = KaspaSuccess,
+                    modifier = Modifier.size(14.dp)
+                )
+            } else if (isActive) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    color = KaspaPrimary,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Text(
+                    text = stepNumber,
+                    color = KaspaTextMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = when {
+                    isDone -> KaspaTextPrimary
+                    isActive -> KaspaPrimary
+                    else -> KaspaTextSecondary
+                },
+                fontSize = 13.sp,
+                fontWeight = if (isActive || isDone) FontWeight.Bold else FontWeight.Normal
+            )
+            Text(
+                text = subtitle,
+                color = if (isActive) KaspaPrimary.copy(alpha = 0.9f) else KaspaTextMuted,
+                fontSize = 11.sp
+            )
         }
     }
 }

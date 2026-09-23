@@ -93,7 +93,47 @@ data class UtxoEntry(
     val scriptPublicKey: String,
     val blockDaaScore: Long,
     val isCoinbase: Boolean = false
+) {
+    fun toEntity(accountId: String, address: String = ""): UtxoEntity = UtxoEntity(
+        accountId = accountId,
+        outpointTxId = outpointTxId,
+        outpointIndex = outpointIndex,
+        amountSompi = amountSompi,
+        scriptPublicKey = scriptPublicKey,
+        blockDaaScore = blockDaaScore,
+        isCoinbase = isCoinbase,
+        address = address,
+        isSpent = false,
+        updatedAt = System.currentTimeMillis()
+    )
+}
+
+@Entity(
+    tableName = "utxos",
+    primaryKeys = ["accountId", "outpointTxId", "outpointIndex"]
 )
+@Serializable
+data class UtxoEntity(
+    val accountId: String,
+    val outpointTxId: String,
+    val outpointIndex: Int,
+    val amountSompi: Long,
+    val scriptPublicKey: String,
+    val blockDaaScore: Long,
+    val isCoinbase: Boolean = false,
+    val address: String = "",
+    val isSpent: Boolean = false,
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    fun toUtxoEntry(): UtxoEntry = UtxoEntry(
+        outpointTxId = outpointTxId,
+        outpointIndex = outpointIndex,
+        amountSompi = amountSompi,
+        scriptPublicKey = scriptPublicKey,
+        blockDaaScore = blockDaaScore,
+        isCoinbase = isCoinbase
+    )
+}
 
 @Serializable
 data class BlockDagInfo(
@@ -108,7 +148,7 @@ data class BlockDagInfo(
     val currentRewardKas: Double = 0.0,
     val connectedPeers: Int = 0,
     val nodeLatencyMs: Long = 0L,
-    val nodeVersion: String = "v2.0.1 (Rusty Kaspa)"
+    val nodeVersion: String = "v2.1.0 (Rusty Kaspad)"
 )
 
 @Serializable
